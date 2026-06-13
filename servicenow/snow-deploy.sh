@@ -22,7 +22,7 @@ CLUSTER_NAME=""
 SNC_SSL="true"
 PORT_START=16001
 PROXY="haproxy"
-SNC_CLEAN_INSTALL="false"
+SNC_CLEAN_INSTALL="auto"
 MEDIA_DIR="/data/snow_media"
 BACKUP_DIR="/mnt/backup"
 HAPROXY_STATPORT=14567
@@ -45,7 +45,11 @@ usage() {
     --install_dir=<path>          SNC root installation directory    (default: /glide)
     --glidebase_version=<file>    Glide base tarball filename        (default: glide-base-20240329.tar.gz)
     --jdk_tarball=<file>          JDK tarball filename in media_dir  (required)
-    --clean_install=<true|false>  DB init mode: deploy 1 node first, wait for schema load, then deploy rest (default: false)
+    --clean_install=<auto|true|false>
+                                  auto  – detect from DB: empty DB = first node (init + wait),
+                                          tables present = subsequent node (join directly) (default)
+                                  true  – force first-node mode regardless of DB state
+                                  false – force subsequent-node mode (skip DB init wait)
     --db_type=<mariadb|postgresql> Database engine type             (default: mariadb)
     --db_user=<user>              Database username                  (default: snc)
     --db_port=<port>              Database port (3306 mariadb / 5432 postgresql)
@@ -179,6 +183,11 @@ validate_args() {
     *) die "--db_tls_min must be 'TLSv1.2' or 'TLSv1.3'." ;;
   esac
 
+  case "${SNC_CLEAN_INSTALL}" in
+    auto|true|false) ;;
+    *) die "--clean_install must be 'auto', 'true', or 'false'." ;;
+  esac
+
   if [ -z "${DB_PORT}" ]; then
     [ "${DB_TYPE}" = "postgresql" ] && DB_PORT=5432 || DB_PORT=3306
   fi
@@ -203,11 +212,11 @@ validate_args() {
     if [ "${DB_TLS_MIN}" = "TLSv1.3" ]; then
       DB_TLS_PROTOCOLS="TLSv1.3"
       DB_TLS_CIPHERS_JDBC="TLS_AES_256_GCM_SHA384,TLS_AES_128_GCM_SHA256"
-      DB_TLS_CIPHERS_OPENSSL="TLS_AES_256_GCM_SHA384,TLS_AES_128_GCM_SHA256"
+      DB_TLS_CIPHERS_OPENSSL=""   # TLS 1.3 ciphers are auto-negotiated; ssl-cipher is TLS 1.2 only
     else
       DB_TLS_PROTOCOLS="TLSv1.3,TLSv1.2"
       DB_TLS_CIPHERS_JDBC="TLS_AES_256_GCM_SHA384,TLS_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
-      DB_TLS_CIPHERS_OPENSSL="TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
+      DB_TLS_CIPHERS_OPENSSL="ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
     fi
   fi
 
@@ -493,21 +502,31 @@ install_instance() {
 }
 
 wait_for_db_init() {
+  local mysql_cmd="mysql --host=${DB_HOST} --port=${DB_PORT} --user=${DB_USER} --ssl --skip-column-names"
+  local query="SELECT summary_complete_status FROM ${DB_NAME}.sys_upgrade_history ORDER BY upgrade_started DESC LIMIT 1;"
+
+  # Idempotency: skip wait if schema initialisation already completed
+  local current
+  current=$(${mysql_cmd} -e "${query}" 2>/dev/null || true)
+  if echo "${current}" | grep -q "complete"; then
+    log "DB schema already initialised, skipping wait."
+    return 0
+  fi
+
   log "Waiting for DB schema initialisation (can take 4-9 hours)..."
 
   local attempt=0
   local max_attempts=1620  # 9 hours at 20s intervals
-  local mysql_cmd="mysql --host=${DB_HOST} --port=${DB_PORT} --user=${DB_USER} --ssl --skip-column-names"
+  local result
 
-  until ${mysql_cmd} \
-      -e "select summary_complete_status from ${DB_NAME}.sys_upgrade_history;" \
-      2>/dev/null | grep -q "complete"; do
+  until result=$(${mysql_cmd} -e "${query}" 2>&1) && echo "${result}" | grep -q "complete"; do
     attempt=$(( attempt + 1 ))
     if [ "${attempt}" -ge "${max_attempts}" ]; then
       die "DB initialisation did not complete after $(( max_attempts * 20 / 3600 )) hours."
     fi
-    [ $(( attempt % 90 )) -eq 0 ] && \
-      log "Still waiting for DB init... $(( attempt * 20 / 60 )) min elapsed."
+    if [ $(( attempt % 90 )) -eq 0 ]; then
+      log "Still waiting for DB init... $(( attempt * 20 / 60 )) min elapsed. Last DB response: ${result}"
+    fi
     sleep 20
   done
 
@@ -517,34 +536,65 @@ wait_for_db_init() {
 insert_glide_war() {
   log "Inserting glide.war version into sys_properties..."
   mysql --host="${DB_HOST}" --port="${DB_PORT}" --user="${DB_USER}" --ssl \
-    -e "insert into ${DB_NAME}.sys_properties(name,type,is_private,description,value) \
-        values ('glide.war','string',1,'Current version','${APP_VERSION}');"
+    -e "INSERT IGNORE INTO ${DB_NAME}.sys_properties(name,type,is_private,description,value) \
+        VALUES ('glide.war','string',1,'Current version','${APP_VERSION}');"
   log "glide.war inserted."
 }
 
+detect_install_mode() {
+  local ssl_flag=""
+  [ "${DB_SSL}" = "true" ] && ssl_flag="--ssl"
+
+  local result
+  if ! result=$(mysql --host="${DB_HOST}" --port="${DB_PORT}" --user="${DB_USER}" \
+      ${ssl_flag} --skip-column-names \
+      -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}';" \
+      2>&1); then
+    die "Cannot connect to DB ${DB_HOST}:${DB_PORT} to detect node role: ${result}"
+  fi
+
+  local table_count
+  table_count=$(echo "${result}" | tr -d '[:space:]')
+
+  if [ "${table_count:-0}" -eq 0 ] 2>/dev/null; then
+    log "DB has no tables — first node (clean install)." >&2
+    echo "first"
+  else
+    log "DB has ${table_count} table(s) — subsequent node (join cluster)." >&2
+    echo "subsequent"
+  fi
+}
+
 install_all_instances() {
-  if [ "${SNC_CLEAN_INSTALL}" = "true" ]; then
-    log "Clean install mode: deploying instance 1 only for DB initialisation..."
+  local mode="${SNC_CLEAN_INSTALL}"
+
+  if [ "${mode}" = "auto" ]; then
+    mode=$(detect_install_mode)
+  fi
+
+  if [ "${mode}" = "true" ] || [ "${mode}" = "first" ]; then
+    log "First node: deploying instance 1 for DB initialisation..."
     install_instance 1
 
     wait_for_db_init
     insert_glide_war
 
     if [ "${INSTANCES}" -gt 1 ]; then
-      log "DB ready. Deploying remaining $(( INSTANCES - 1 )) instance(s)..."
+      log "DB ready. Deploying remaining $(( INSTANCES - 1 )) instance(s) on this node..."
       local seq
       for seq in $(seq 2 "${INSTANCES}"); do
         install_instance "${seq}"
       done
     fi
   else
-    log "Installing ${INSTANCES} ServiceNow instance(s)..."
+    log "Subsequent node: deploying ${INSTANCES} instance(s) and joining cluster..."
     local seq
     for seq in $(seq 1 "${INSTANCES}"); do
       install_instance "${seq}"
     done
   fi
-  log "All instances installed."
+
+  log "All instances on $(hostname -s) installed."
 }
 
 # ── STEP 10: PROXY ────────────────────────────────────────────────────────────
@@ -810,7 +860,8 @@ configure_mariadb_client() {
   mkdir -p /etc/my.cnf.d
 
   if [ "${DB_SSL}" = "true" ]; then
-    cat > /etc/my.cnf.d/mariadb-client.cnf <<EOF
+    if [ -n "${DB_TLS_CIPHERS_OPENSSL}" ]; then
+      cat > /etc/my.cnf.d/mariadb-client.cnf <<EOF
 [client]
 user        = ${DB_USER}
 password    = ${DB_PASSWORD}
@@ -825,6 +876,21 @@ ssl
 ssl-cipher  = ${DB_TLS_CIPHERS_OPENSSL}
 tls-version = ${DB_TLS_PROTOCOLS}
 EOF
+    else
+      cat > /etc/my.cnf.d/mariadb-client.cnf <<EOF
+[client]
+user        = ${DB_USER}
+password    = ${DB_PASSWORD}
+ssl
+tls-version = ${DB_TLS_PROTOCOLS}
+
+[mysqldump]
+user        = ${DB_USER}
+password    = ${DB_PASSWORD}
+ssl
+tls-version = ${DB_TLS_PROTOCOLS}
+EOF
+    fi
   else
     cat > /etc/my.cnf.d/mariadb-client.cnf <<EOF
 [client]
@@ -1005,7 +1071,7 @@ main() {
   log "  Install dir : ${INSTALL_DIR}"
   log "  App version : ${APP_VERSION}"
   log "  JDK         : ${JDK_TARBALL}"
-  log "  Clean install: ${SNC_CLEAN_INSTALL}"
+  log "  Node mode    : ${SNC_CLEAN_INSTALL} (auto=detect from DB)"
   log "  DB host     : ${DB_HOST}:${DB_PORT} (${DB_TYPE})"
   log "  Instances   : ${INSTANCES} (ports ${PORT_START}-$(( PORT_START + INSTANCES - 1 )))"
   log "  Proxy       : ${PROXY} (ports ${PROXY_PORT_START}-$(( PROXY_PORT_START + INSTANCES - 1 )), SSL=${SNC_SSL})"

@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.1.1] — 2026-06-13
+
+### Fixed
+
+#### ServiceNow (`servicenow/`)
+
+- `snow-deploy.sh` — multi-node deployment fixes:
+  - **Auto node-role detection** (`--clean_install=auto`, now default): queries `information_schema.tables`
+    on startup to determine whether the DB is empty (first node — run clean install + wait) or already
+    initialised (subsequent node — join cluster directly). Log output from the detection function is
+    redirected to stderr so the mode word is cleanly captured by the caller.
+  - **`wait_for_db_init` idempotency**: checks `sys_upgrade_history` at entry and returns immediately
+    if schema initialisation is already complete, preventing a re-run from re-entering the 9-hour wait.
+  - **`insert_glide_war` idempotency**: changed `INSERT INTO` to `INSERT IGNORE INTO` so re-runs do
+    not fail on a duplicate `glide.war` key in `sys_properties`.
+  - **MariaDB TLS cipher fix**: removed TLS 1.3 cipher names (`TLS_AES_*`) from the `ssl-cipher`
+    directive in `/etc/my.cnf.d/mariadb-client.cnf`. The `ssl-cipher` field only accepts TLS 1.2
+    OpenSSL-format names; TLS 1.3 ciphers are auto-negotiated when `tls-version` includes `TLSv1.3`.
+    The `ssl-cipher` line is omitted entirely when `--db_tls_min=TLSv1.3`.
+  - **`--clean_install` validation**: added guard rejecting values other than `auto`, `true`, or `false`.
+
 ## [v0.1.0] — 2026-06-12
 
 ### Added
