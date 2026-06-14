@@ -26,7 +26,6 @@ SNC_CLEAN_INSTALL="auto"
 MEDIA_DIR="/data/snow_media"
 BACKUP_DIR="/mnt/backup"
 HAPROXY_STATPORT=14567
-PROXY_PORT_START=8443
 
 # ── USAGE ─────────────────────────────────────────────────────────────────────
 usage() {
@@ -118,11 +117,6 @@ instance_path() {
 instance_http_port() {
   local seq=$1
   echo $(( PORT_START + seq - 1 ))
-}
-
-proxy_frontend_port() {
-  local seq=$1
-  echo $(( PROXY_PORT_START + seq - 1 ))
 }
 
 # ── ARGUMENT PARSING ──────────────────────────────────────────────────────────
@@ -369,6 +363,7 @@ write_glide_properties() {
   local node=$3
 
   cat > "${inst_path}/conf/glide.properties" <<EOF
+glide.servlet.host = 127.0.0.1
 glide.servlet.port = ${http_port}
 glide.cluster.node_name = ${node}
 
@@ -632,11 +627,11 @@ install_haproxy() {
   local nbthread=$(( ncpus / 4 ))
   [ "${nbthread}" -lt 1 ] && nbthread=1
 
-  log "Configuring HAProxy (${INSTANCES} instance(s), 1 frontend per instance)..."
+  log "Configuring HAProxy (${INSTANCES} instance(s), single frontend on :443)..."
 
   [ "${SNC_SSL}" = "true" ] && setup_ssl_cert_haproxy
 
-  # Build global + defaults sections
+  # global + defaults
   cat > "${cfg_path}/haproxy.cfg" <<EOF
 global
   nbthread              ${nbthread}
@@ -691,42 +686,55 @@ frontend stats
 
 EOF
 
-  # 1:1 frontend-to-backend per instance
-  local seq
-  for seq in $(seq 1 "${INSTANCES}"); do
-    local node;       node="$(instance_node "${seq}")"
-    local http_port;  http_port="$(instance_http_port "${seq}")"
-    local proxy_port; proxy_port="$(proxy_frontend_port "${seq}")"
-    local bind_line
+  # Single frontend on :443 → single backend pool of all instances
+  local bind_line
+  if [ "${SNC_SSL}" = "true" ]; then
+    bind_line="bind 0.0.0.0:443 ssl crt ${cfg_path}/host.pem"
+  else
+    bind_line="bind 0.0.0.0:443"
+  fi
 
-    if [ "${SNC_SSL}" = "true" ]; then
-      bind_line="bind *:${proxy_port} ssl crt ${cfg_path}/host.pem"
-    else
-      bind_line="bind *:${proxy_port}"
-    fi
-
-    cat >> "${cfg_path}/haproxy.cfg" <<EOF
-frontend snc-$(printf "%02d" "${seq}")-frontend
+  cat >> "${cfg_path}/haproxy.cfg" <<EOF
+frontend snc-frontend
   ${bind_line}
   option                httplog
   option                forwardfor
   option                http-server-close
-  acl hdr_upgrade_ws    hdr(Connection) -i Upgrade
-  acl hdr_ws            hdr(Upgrade)    -i websocket
-  acl path_amb          path_beg        /amb
-  use_backend snc-$(printf "%02d" "${seq}")-backend if hdr_upgrade_ws hdr_ws path_amb
-  default_backend       snc-$(printf "%02d" "${seq}")-backend
 
-backend snc-$(printf "%02d" "${seq}")-backend
+  # Inform backend of original protocol and host
+  http-request          set-header X-Forwarded-Host %[req.hdr(host)]
+  http-request          set-header X-Forwarded-Proto https if { ssl_fc }
+  http-request          set-header X-Forwarded-Proto http if !{ ssl_fc }
+
+  # HSTS and secure cookie flags (per ServiceNow LB guidance)
+  http-after-response   set-header Strict-Transport-Security "max-age=63072000; includeSubDomains;"
+  http-after-response   replace-header Set-Cookie '(^((?!(?i)httponly).)*$)' '\1; HttpOnly'
+  http-after-response   replace-header Set-Cookie '(^((?!(?i)secure).)*$)' '\1; Secure'
+
+  # Rewrite http→https in Location redirects from SNC
+  http-response         replace-header Location ^http://(.*)$ https://\1
+
+  default_backend       snc-backend
+
+backend snc-backend
   mode                  http
+  balance               leastconn
   option                httpchk
   http-check send       meth GET uri /stats.do
-  balance               roundrobin
-  http-response         replace-value Location ^http://(.*)$ https://\1
-  server                ${node} 127.0.0.1:${http_port} check
+  # HAProxy-managed session cookie for connection persistence (required by ServiceNow)
+  cookie                SERVERID insert indirect nocache
 
 EOF
+
+  local seq
+  for seq in $(seq 1 "${INSTANCES}"); do
+    local node;      node="$(instance_node "${seq}")"
+    local http_port; http_port="$(instance_http_port "${seq}")"
+    cat >> "${cfg_path}/haproxy.cfg" <<EOF
+  server                ${node} 127.0.0.1:${http_port} check cookie ${node}
+EOF
   done
+  echo "" >> "${cfg_path}/haproxy.cfg"
 
   # rsyslog + logrotate for haproxy
   mkdir -p /var/log/haproxy
@@ -769,67 +777,87 @@ install_nginx() {
   local ssl_dir=/etc/nginx/ssl
   local conf_dir=/etc/nginx/conf.d
 
-  log "Configuring nginx (${INSTANCES} instance(s), 1 server block per instance)..."
+  log "Configuring nginx (${INSTANCES} instance(s), single frontend on :443)..."
 
   [ "${SNC_SSL}" = "true" ] && setup_ssl_cert_nginx
 
-  # Remove default config
   rm -f "${conf_dir}/default.conf"
 
-  local seq
-  for seq in $(seq 1 "${INSTANCES}"); do
-    local node;       node="$(instance_node "${seq}")"
-    local http_port;  http_port="$(instance_http_port "${seq}")"
-    local proxy_port; proxy_port="$(proxy_frontend_port "${seq}")"
+  # Build upstream block dynamically from all instances
+  {
+    echo "upstream snc_backend {"
+    echo "  least_conn;"
+    local seq
+    for seq in $(seq 1 "${INSTANCES}"); do
+      local http_port; http_port="$(instance_http_port "${seq}")"
+      echo "  server 127.0.0.1:${http_port};"
+    done
+    echo "}"
+    echo ""
+  } > "${conf_dir}/snc.conf"
 
-    local listen_line
-    if [ "${SNC_SSL}" = "true" ]; then
-      listen_line="listen ${proxy_port} ssl http2;"
-    else
-      listen_line="listen ${proxy_port};"
-    fi
+  local listen_line
+  if [ "${SNC_SSL}" = "true" ]; then
+    listen_line="listen 443 ssl http2;"
+  else
+    listen_line="listen 443;"
+  fi
 
-    cat > "${conf_dir}/snc-$(printf "%02d" "${seq}").conf" <<EOF
+  cat >> "${conf_dir}/snc.conf" <<EOF
 server {
   ${listen_line}
   server_name _;
 
 EOF
 
-    if [ "${SNC_SSL}" = "true" ]; then
-      cat >> "${conf_dir}/snc-$(printf "%02d" "${seq}").conf" <<EOF
-  ssl_certificate     ${ssl_dir}/host.crt;
-  ssl_certificate_key ${ssl_dir}/host.key;
-  ssl_protocols       TLSv1.2 TLSv1.3;
-  ssl_ciphers         ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256;
+  if [ "${SNC_SSL}" = "true" ]; then
+    cat >> "${conf_dir}/snc.conf" <<EOF
+  ssl_certificate          ${ssl_dir}/host.crt;
+  ssl_certificate_key      ${ssl_dir}/host.key;
+  ssl_protocols            TLSv1.2 TLSv1.3;
+  ssl_ciphers              ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256;
   ssl_prefer_server_ciphers on;
 
-EOF
-    fi
+  add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
 
-    cat >> "${conf_dir}/snc-$(printf "%02d" "${seq}").conf" <<EOF
+EOF
+  fi
+
+  cat >> "${conf_dir}/snc.conf" <<'EOF'
   location / {
-    proxy_pass         http://127.0.0.1:${http_port};
-    proxy_http_version 1.1;
-    proxy_set_header   Host              \$host;
-    proxy_set_header   X-Real-IP         \$remote_addr;
-    proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
-    proxy_set_header   X-Forwarded-Proto \$scheme;
-    proxy_set_header   Upgrade           \$http_upgrade;
-    proxy_set_header   Connection        "upgrade";
-    proxy_read_timeout 300s;
-    proxy_send_timeout 300s;
+    proxy_pass              http://snc_backend;
+    proxy_http_version      1.1;
+    proxy_set_header        Host              $host;
+    proxy_set_header        X-Real-IP         $remote_addr;
+    proxy_set_header        X-Forwarded-For   $proxy_add_x_forwarded_for;
+    proxy_set_header        X-Forwarded-Host  $host;
+    proxy_set_header        X-Forwarded-Proto $scheme;
+    proxy_set_header        Upgrade           $http_upgrade;
+    proxy_set_header        Connection        "upgrade";
+    proxy_read_timeout      300s;
+    proxy_send_timeout      300s;
+
+    # Rewrite http→https in Location redirects from SNC
+    proxy_redirect          http://$host/ https://$host/;
+
+    # Mark SNC cookies as Secure (per ServiceNow LB guidance)
+    proxy_cookie_flags      JSESSIONID secure;
+    proxy_cookie_flags      glide_user secure;
+    proxy_cookie_flags      glide_user_route secure;
+    proxy_cookie_flags      glide_user_session secure;
+    proxy_cookie_flags      glide_session_store secure;
+    proxy_cookie_flags      glide_user_activity secure;
+    proxy_cookie_flags      BAYEUX_BROWSER HttpOnly secure;
   }
 
-  access_log /var/log/nginx/snc-$(printf "%02d" "${seq}")-access.log;
-  error_log  /var/log/nginx/snc-$(printf "%02d" "${seq}")-error.log;
+  access_log /var/log/nginx/snc-access.log;
+  error_log  /var/log/nginx/snc-error.log;
 }
 EOF
-    log "nginx config written for instance ${seq} (proxy port ${proxy_port} → SNC port ${http_port})"
-  done
+  log "nginx config written (single frontend :443 → upstream pool of ${INSTANCES} instance(s))"
 
   cat > /etc/logrotate.d/nginx-snc <<'EOF'
-/var/log/nginx/snc-*.log {
+/var/log/nginx/snc-access.log /var/log/nginx/snc-error.log {
   daily
   rotate 30
   missingok
@@ -1079,7 +1107,7 @@ main() {
   log "  Node mode    : ${SNC_CLEAN_INSTALL} (auto=detect from DB)"
   log "  DB host     : ${DB_HOST}:${DB_PORT} (${DB_TYPE})"
   log "  Instances   : ${INSTANCES} (ports ${PORT_START}-$(( PORT_START + INSTANCES - 1 )))"
-  log "  Proxy       : ${PROXY} (ports ${PROXY_PORT_START}-$(( PROXY_PORT_START + INSTANCES - 1 )), SSL=${SNC_SSL})"
+  log "  Proxy       : ${PROXY} (:443, SSL=${SNC_SSL}, leastconn, SERVERID cookie)"
   log "  Cluster     : ${CLUSTER_NAME}"
   log "============================================================"
 
@@ -1099,10 +1127,10 @@ main() {
 
   log "============================================================"
   log "Deployment complete on $(hostname -f)"
-  log "Proxy ports (1:1 per instance):"
+  log "Proxy :443 → backend pool:"
   local seq
   for seq in $(seq 1 "${INSTANCES}"); do
-    log "  $(instance_svc "${seq}") → proxy:$(proxy_frontend_port "${seq}") → SNC:$(instance_http_port "${seq}")"
+    log "  $(instance_svc "${seq}") → 127.0.0.1:$(instance_http_port "${seq}")"
   done
   log "============================================================"
 }

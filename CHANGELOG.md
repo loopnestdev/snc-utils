@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.1.3] — 2026-06-14
+
+### Added
+
+#### ServiceNow (`servicenow/`)
+
+- `haproxy-migrate.sh` — ad-hoc script to migrate an existing VM from the old
+  per-instance HAProxy topology to the new single-frontend design without
+  rerunning the full deployment. Auto-detects SSL, backs up the old config,
+  writes and validates the new config, and does a graceful reload with automatic
+  rollback on syntax error.
+
+### Changed
+
+#### ServiceNow (`servicenow/`)
+
+- `snow-deploy.sh` — proxy topology redesign:
+  - **HAProxy**: replaced per-instance frontends (one port per instance) with a
+    single `frontend snc-frontend` on `0.0.0.0:443` backed by all instances in
+    one `backend snc-backend` pool. Load balancing algorithm changed from
+    `roundrobin` to `leastconn`. Added HAProxy-managed `SERVERID` cookie for
+    session persistence (required by ServiceNow). Added full set of
+    ServiceNow-recommended LB headers: `X-Forwarded-Host`, `X-Forwarded-Proto`,
+    HSTS (`max-age=63072000; includeSubDomains`), `HttpOnly`/`Secure` flags on
+    all response cookies, `Location` http→https rewrite.
+  - **nginx**: same single-upstream topology — one `upstream snc_backend` block
+    with `least_conn` and all instances, served by a single `server` block on
+    `:443`. Added `X-Forwarded-Host/Proto`, HSTS header, `proxy_redirect`
+    http→https, and `proxy_cookie_flags` for all ServiceNow cookies
+    (Secure/HttpOnly) per ServiceNow nginx guidance.
+  - **`glide.properties`**: added `glide.servlet.host = 127.0.0.1` so SNC
+    instances bind to loopback only, with HAProxy as the sole client.
+  - Removed `PROXY_PORT_START` default and `proxy_frontend_port()` helper —
+    both obsolete with the single-frontend design.
+
 ## [v0.1.2] — 2026-06-14
 
 ### Changed
