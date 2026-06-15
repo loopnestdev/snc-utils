@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.1.5] — 2026-06-15
+
+### Changed
+
+#### ServiceNow (`servicenow/`)
+
+- `snow-deploy.sh` — two new parameterised arguments:
+  - `--svc_prefix=<prefix>` (default: `snc`) — systemd service name prefix;
+    instances are named `<prefix>01`, `<prefix>02`, etc. Previously hardcoded
+    to `snc-01`, `snc-02`, ...
+  - `--snc_user=<user>` (default: `servicenow`) — OS user and group created
+    for the SNC process. Applied to `groupadd`/`useradd`, the systemd unit
+    `User=`/`Group=` directives, and all `chown` calls.
+
 ## [v0.1.4] — 2026-06-15
 
 ### Added

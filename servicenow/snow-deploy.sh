@@ -23,6 +23,8 @@ SNC_SSL="true"
 PORT_START=16001
 PROXY="haproxy"
 SNC_CLEAN_INSTALL="auto"
+SVC_PREFIX="snc"
+SNC_USER="servicenow"
 MEDIA_DIR="/data/snow_media"
 BACKUP_DIR="/mnt/backup"
 HAPROXY_STATPORT=14567
@@ -56,6 +58,9 @@ usage() {
     --db_ssl=<true|false>         Enable SSL for DB connection       (default: true)
     --db_tls_min=<TLSv1.2|TLSv1.3> Minimum TLS version for DB SSL   (default: TLSv1.2)
     --instances=<count>           Number of SNC instances per VM     (default: 4)
+    --svc_prefix=<prefix>         Systemd service name prefix        (default: snc)
+                                  Services will be named <prefix>01, <prefix>02, ...
+    --snc_user=<user>             OS user and group for SNC process  (default: servicenow)
     --snc_ssl=<true|false>        Enable SSL on proxy frontend       (default: true)
     --port_start=<port>           SNC HTTP port for first instance   (default: 16001)
     --proxy=<haproxy|nginx>       Reverse proxy to install          (default: haproxy)
@@ -106,7 +111,7 @@ instance_node() {
 
 instance_svc() {
   local seq=$1
-  printf "snc-%02d" "${seq}"
+  printf "%s%02d" "${SVC_PREFIX}" "${seq}"
 }
 
 instance_path() {
@@ -142,6 +147,8 @@ parse_args() {
       --db_ssl=*)           DB_SSL="${1#*=}" ;;
       --db_tls_min=*)       DB_TLS_MIN="${1#*=}" ;;
       --instances=*)        INSTANCES="${1#*=}" ;;
+      --svc_prefix=*)       SVC_PREFIX="${1#*=}" ;;
+      --snc_user=*)         SNC_USER="${1#*=}" ;;
       --cluster_name=*)     CLUSTER_NAME="${1#*=}" ;;
       --snc_ssl=*)          SNC_SSL="${1#*=}" ;;
       --port_start=*)       PORT_START="${1#*=}" ;;
@@ -274,9 +281,9 @@ LIMITS
 
 # ── STEP 3: OS USER AND GROUP ─────────────────────────────────────────────────
 create_user_group() {
-  log "Creating servicenow user and group..."
-  getent group servicenow  > /dev/null 2>&1 || groupadd servicenow
-  id -u servicenow         > /dev/null 2>&1 || useradd -M -g servicenow servicenow
+  log "Creating ${SNC_USER} user and group..."
+  getent group "${SNC_USER}"  > /dev/null 2>&1 || groupadd "${SNC_USER}"
+  id -u "${SNC_USER}"         > /dev/null 2>&1 || useradd -M -g "${SNC_USER}" "${SNC_USER}"
   log "User and group ready."
 }
 
@@ -456,8 +463,8 @@ Environment=MALLOC_ARENA_MAX=1
 Type=forking
 ExecStart=${inst_path}/startup.sh
 ExecStop=${inst_path}/shutdown.sh
-User=servicenow
-Group=servicenow
+User=${SNC_USER}
+Group=${SNC_USER}
 UMask=0007
 
 [Install]
@@ -491,7 +498,7 @@ install_instance() {
   write_jdk_overrides        "${inst}"
   write_systemd_service      "${svc}"  "${inst}"
 
-  chown -R servicenow:servicenow "${inst}"
+  chown -R "${SNC_USER}:${SNC_USER}" "${inst}"
   chmod -R 755 "${inst}"
 
   systemctl daemon-reload
@@ -945,7 +952,7 @@ configure_backup() {
   log "Configuring backup..."
 
   cp "${CONFIG_DIR}/snow-backup.sh" "${INSTALL_DIR}/bin/snow-backup.sh"
-  chown servicenow:servicenow     "${INSTALL_DIR}/bin/snow-backup.sh"
+  chown "${SNC_USER}:${SNC_USER}" "${INSTALL_DIR}/bin/snow-backup.sh"
   chmod 755                       "${INSTALL_DIR}/bin/snow-backup.sh"
 
   echo 'CRONARGS=-m off' > /etc/sysconfig/crond
