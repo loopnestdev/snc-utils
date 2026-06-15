@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.1.4] — 2026-06-15
+
+### Added
+
+#### ServiceNow (`servicenow/`)
+
+- `install-jdk.sh` — standalone JDK installation script extracted from
+  `snow-deploy.sh`. Accepts `--jdk_tarball`, `--install_dir`, and
+  `--media_dir` parameters. Extracts the tarball, flattens the nested
+  directory, writes `JAVA_HOME` and `PATH` to `/etc/profile.d/`, and is
+  idempotent (skips extraction if `bin/java` already exists). Intended for
+  installing OpenJDK on extra component VMs that don't run a full SNC
+  deployment.
+
 ## [v0.1.3] — 2026-06-14
 
 ### Added
