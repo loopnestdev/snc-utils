@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.1.9] — 2026-06-18
+
+### Fixed
+
+#### ServiceNow (`servicenow/`)
+
+- `snow-deploy.sh` — PostgreSQL JDBC URL now uses `sslmode=require` /
+  `sslmode=disable` instead of the deprecated
+  `ssl=true&sslfactory=org.postgresql.ssl.NonValidatingFactory`. The old
+  `NonValidatingFactory` class is unavailable in newer JDBC drivers bundled
+  with Australia release, causing connections to silently drop SSL and be
+  rejected by `pg_hba.conf` with "no encryption".
+
 ## [v0.1.8] — 2026-06-18
 
 ### Added

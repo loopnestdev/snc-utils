@@ -228,7 +228,11 @@ validate_args() {
       JDBC_URL="jdbc:mariadb://${DB_HOST}:${DB_PORT}/${DB_NAME}?useSSL=false"
     fi
   else
-    JDBC_URL="jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}?ssl=${DB_SSL}&sslfactory=org.postgresql.ssl.NonValidatingFactory"
+    if [ "${DB_SSL}" = "true" ]; then
+      JDBC_URL="jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=require"
+    else
+      JDBC_URL="jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}?sslmode=disable"
+    fi
   fi
 }
 
