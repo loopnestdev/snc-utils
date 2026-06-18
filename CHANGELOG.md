@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.1.8] — 2026-06-18
+
+### Added
+
+#### ServiceNow (`servicenow/`)
+
+- `snow-deploy.sh` — JDK 21 support for Australia release (KB2833352):
+  - Added `21)` branch to `write_jdk_overrides()` with all required property
+    files per ServiceNow KB2833352.
+  - `51-memory.properties`: `-Xms2048m -Xmx4096m` with
+    `-XX:-UseAdaptiveSizePolicy`.
+  - `86-security.properties` (new): `-Djava.security.manager=allow`.
+  - `88-xmldefault.properties` (new): DTM manager and XML stream factory
+    defaults required by JDK 21.
+  - `92-access.properties`: two additional `--add-opens` entries
+    (`java.base/java.lang.module`, `java.base/jdk.internal.module`).
+  - `93-legacy-jdk.properties`: retained for JDK 21 (KB mandates it).
+  - `98-general.properties`: `-XX:+ParallelRefProcEnabled` retained per KB.
+  - Unsupported version error message updated to include `21`.
+
 ## [v0.1.7] — 2026-06-18
 
 ### Fixed

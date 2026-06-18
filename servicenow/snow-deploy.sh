@@ -240,9 +240,7 @@ install_deps() {
 
   dnf install -y \
     glibc \
-    glibc.i686 \
     libgcc \
-    libgcc.i686 \
     rng-tools
 
   if [ "${DB_TYPE}" = "mariadb" ]; then
@@ -442,8 +440,55 @@ glide.java.opts.snippet.nodeconfig.gc=-XX:+UseParallelGC -XX:ParallelGCThreads=1
 glide.java.opts.snippet.nodeconfig.extra=-XX:CICompilerCount=12
 EOF
       ;;
+    21)
+      cat > "${inst_path}/conf/overrides.d/51-memory.properties" <<'EOF'
+glide.java.opts.snippet.nodeconfig.mem=-Xms2048m -Xmx4096m -XX:MaxMetaspaceSize=640m -XX:ReservedCodeCacheSize=240m -XX:MaxDirectMemorySize=256m -XX:-UseAdaptiveSizePolicy
+EOF
+      cat > "${inst_path}/conf/overrides.d/86-security.properties" <<'EOF'
+glide.java.opts.snippet.nodeconfig.security=-Djava.security.manager=allow
+EOF
+      cat > "${inst_path}/conf/overrides.d/88-xmldefault.properties" <<'EOF'
+glide.system.property.startup.org.apache.xml.dtm.DTMManager=org.apache.xml.dtm.ref.DTMManagerDefault
+glide.system.property.startup.javax.xml.stream.XMLInputFactory=com.ctc.wstx.stax.WstxInputFactory
+glide.system.property.startup.javax.xml.stream.XMLOutputFactory=com.ctc.wstx.stax.WstxOutputFactory
+EOF
+      cat > "${inst_path}/conf/overrides.d/92-access.properties" <<'EOF'
+# https://support.servicenow.com/kb?id=kb_article_view&sysparm_article=KB1362432
+glide.java.opts.snippet.nodeconfig.access=\
+--add-opens=java.base/java.lang=ALL-UNNAMED \
+--add-opens=java.base/java.lang.module=ALL-UNNAMED \
+--add-opens=java.base/java.time=ALL-UNNAMED \
+--add-opens=java.base/java.util=ALL-UNNAMED \
+--add-opens=java.base/java.util.regex=ALL-UNNAMED \
+--add-opens=java.base/jdk.internal.module=ALL-UNNAMED \
+--add-opens=java.base/jdk.internal.perf=ALL-UNNAMED \
+--add-opens=java.base/com.sun.crypto.provider=ALL-UNNAMED \
+--add-opens=java.base/sun.reflect.annotation=ALL-UNNAMED \
+--add-opens=java.base/sun.security.pkcs12=ALL-UNNAMED \
+--add-opens=java.base/sun.security.provider=ALL-UNNAMED \
+--add-opens=java.base/sun.security.util=ALL-UNNAMED \
+--add-opens=java.base/sun.security.x509=ALL-UNNAMED \
+--add-opens=java.naming/com.sun.jndi.ldap=ALL-UNNAMED \
+--add-opens=java.xml.crypto/org.jcp.xml.dsig.internal.dom=ALL-UNNAMED \
+--add-opens=java.management/sun.management=ALL-UNNAMED \
+--add-exports=java.management/sun.management=ALL-UNNAMED
+EOF
+      cat > "${inst_path}/conf/overrides.d/93-legacy-jdk.properties" <<'EOF'
+glide.system.property.startup.jdk.io.permissionsUseCanonicalPath=true
+glide.system.property.startup.java.locale.providers=JRE,SPI
+glide.system.property.startup.sun.reflect.inflationThreshold=100000
+glide.system.property.startup.jdk.nio.maxCachedBufferSize=262144
+glide.system.property.startup.sun.io.useCanonCaches=false
+glide.system.property.startup.sun.io.useCanonPrefixCache=false
+EOF
+      cat > "${inst_path}/conf/overrides.d/98-general.properties" <<'EOF'
+glide.java.opts.snippet.nodeconfig.general=-server -Xshare:off
+glide.java.opts.snippet.nodeconfig.gc=-XX:+UseParallelGC -XX:ParallelGCThreads=15 -XX:+ParallelRefProcEnabled
+glide.java.opts.snippet.nodeconfig.extra=-XX:CICompilerCount=12
+EOF
+      ;;
     *)
-      die "Unsupported JDK major version detected: ${jdk_major}. Supported: 8, 11, 17"
+      die "Unsupported JDK major version detected: ${jdk_major}. Supported: 8, 11, 17, 21"
       ;;
   esac
 }
