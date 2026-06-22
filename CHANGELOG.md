@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.1.12] — 2026-06-22
+
+### Added
+
+#### ServiceNow (`servicenow/`)
+
+- `snap-deploy.sh` — new deployment script for ServiceNow SNAP Server on RHEL 9.
+  Supports three modes (`--mode=snap|haproxy|all`; default: `all`):
+
+  - **snap** — installs JDK (from tarball), Apache Tomcat (from tarball), SNAP WAR
+    (`snap.tar.gz`), and ClamAV. Tomcat binds exclusively to `127.0.0.1:PORT`
+    and is managed as a parameterised systemd service (`--tomcat_svc`,
+    `--tomcat_user`).
+  - **haproxy** — installs and configures HAProxy as a TLSv1.3-only frontend
+    (KB1632909: HSTS, `X-Forwarded-*` headers, `Location` rewrite, secure
+    cookie flags, `leastconn` balance, `SNAPSERVERID` session cookie).
+  - **all** — both of the above on the same VM; intended for GCP Layer-4 TCP
+    load balancer topology where each VM runs HAProxy `:443` → `127.0.0.1:SNAP_PORT`.
+
+  Key parameters: `--jdk_dir`, `--tomcat_dir`, `--port`, `--media_dir`,
+  `--jdk_tarball`, `--tomcat_tarball`, `--snap_war`, `--cert_file`, `--key_file`,
+  `--java_heap_xmx`, `--clamav_dir`, `--clamav_version`, `--freshclam_mirror`,
+  `--haproxy_bind_port`, `--haproxy_stat_port`, `--tomcat_svc`, `--tomcat_user`,
+  `--skip_deps` (offline environments), `--skip_selinux`.
+
+  ClamAV: `clamd` and `clamav-freshclam` run as systemd services. The freshclam
+  drop-in override clears the default `ExecStart`, adds `ExecStartPre` to release
+  any stale log-file lock, and points both services at the custom config under
+  `${CLAMAV_DIR}/conf/`. `clamav-scan` and `clamav-reputation` are not configured.
+
+  The script is fully idempotent: JDK, Tomcat, SNAP WAR, firewall rules, and
+  ClamAV are each skipped on re-run if already present.
+
 ## [v0.1.11] — 2026-06-18
 
 ### Fixed
