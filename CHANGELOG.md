@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [v0.1.13] — 2026-06-23
+
+### Added
+
+#### ServiceNow (`servicenow/`)
+
+- `snap-deploy.sh` — offline ClamAV database support via two new arguments:
+  - `--skip_freshclam` — skips starting `clamav-freshclam` and the database
+    download wait. Instead copies `main.cvd`, `daily.cvd`, and `bytecode.cvd`
+    from the source directory into `${CLAMAV_DIR}/data/`. `clamd` is still
+    started normally. The `clamav-freshclam` active-service check in
+    `verify_clamav()` is also skipped in this mode.
+  - `--clamav_db_src=<path>` — source directory for the CVD files
+    (default: `/var/lib/clamav`, installed by the `clamav-data` package).
+    Only used when `--skip_freshclam` is set.
+
+  Typical offline invocation: `--skip_deps --skip_freshclam`
+
 ## [v0.1.12] — 2026-06-22
 
 ### Added

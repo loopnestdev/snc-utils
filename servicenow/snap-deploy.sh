@@ -45,6 +45,8 @@ CLAMAV_VERSION=""                      # optional; e.g. "1.0.7" installs clamav-
 FRESHCLAM_DB_MIRROR="database.clamav.net"
 SKIP_DEPS="false"
 SKIP_SELINUX="false"
+SKIP_FRESHCLAM="false"
+CLAMAV_DB_SRC="/var/lib/clamav"        # source dir when --skip_freshclam is set
 
 # ── USAGE ─────────────────────────────────────────────────────────────────────
 usage() {
@@ -77,6 +79,11 @@ usage() {
     --skip_deps                  Skip dnf package installation          (default: false)
                                  Use in offline environments where packages are pre-installed
     --skip_selinux               Skip SELinux port labeling             (default: false)
+    --skip_freshclam             Skip freshclam database download       (default: false)
+                                 Copies main.cvd, daily.cvd, bytecode.cvd from clamav_db_src
+                                 instead. Use in offline environments with clamav-data installed.
+    --clamav_db_src=<path>       Source directory for CVD files         (default: /var/lib/clamav)
+                                 Used only when --skip_freshclam is set
     --help                       Show this help
 
   Modes:
@@ -161,6 +168,8 @@ parse_args() {
       --tomcat_user=*)        SNAP_USER="${1#*=}"; SNAP_GROUP="${1#*=}" ;;
       --skip_deps)            SKIP_DEPS="true" ;;
       --skip_selinux)         SKIP_SELINUX="true" ;;
+      --skip_freshclam)       SKIP_FRESHCLAM="true" ;;
+      --clamav_db_src=*)      CLAMAV_DB_SRC="${1#*=}" ;;
       --help)                 usage; exit 0 ;;
       *) die "Unknown argument: $1. Run $0 --help for usage." ;;
     esac
@@ -604,19 +613,34 @@ verify_tomcat() {
 enable_clamav() {
   log "Enabling and starting ClamAV services..."
 
-  # freshclam must start first to populate the virus database before clamd loads it
-  systemctl enable clamav-freshclam
-  systemctl restart clamav-freshclam
+  local data_dir="${CLAMAV_DIR}/data"
+  local clam_user="clamav"
+  id -u "${clam_user}" >/dev/null 2>&1 || clam_user="root"
 
-  log "Waiting for freshclam to complete initial database download..."
-  local attempt=0 max=24
-  until [ -f "${CLAMAV_DIR}/data/main.cvd" ] || [ -f "${CLAMAV_DIR}/data/main.cld" ]; do
-    attempt=$(( attempt + 1 ))
-    [ "${attempt}" -ge "${max}" ] \
-      && die "freshclam did not populate the database after $(( max * 10 ))s. Check: journalctl -u clamav-freshclam"
-    log "  Waiting for virus database... (${attempt}/${max})"
-    sleep 10
-  done
+  if [ "${SKIP_FRESHCLAM}" = "true" ]; then
+    log "Offline mode: copying ClamAV database from ${CLAMAV_DB_SRC}..."
+    for cvd in main.cvd daily.cvd bytecode.cvd; do
+      [ -f "${CLAMAV_DB_SRC}/${cvd}" ] \
+        || die "${cvd} not found in ${CLAMAV_DB_SRC}. Install the clamav-data package first."
+      cp "${CLAMAV_DB_SRC}/${cvd}" "${data_dir}/${cvd}"
+      log "  Copied ${cvd}."
+    done
+    chown -R "${clam_user}:${clam_user}" "${data_dir}"
+  else
+    # Online: freshclam must populate the database before clamd can start.
+    systemctl enable clamav-freshclam
+    systemctl restart clamav-freshclam
+
+    log "Waiting for freshclam to complete initial database download..."
+    local attempt=0 max=24
+    until [ -f "${data_dir}/main.cvd" ] || [ -f "${data_dir}/main.cld" ]; do
+      attempt=$(( attempt + 1 ))
+      [ "${attempt}" -ge "${max}" ] \
+        && die "freshclam did not populate the database after $(( max * 10 ))s. Check: journalctl -u clamav-freshclam"
+      log "  Waiting for virus database... (${attempt}/${max})"
+      sleep 10
+    done
+  fi
 
   systemctl enable clamd
   systemctl restart clamd
@@ -626,11 +650,15 @@ enable_clamav() {
 verify_clamav() {
   log "Verifying ClamAV services are active..."
 
-  for svc in clamav-freshclam clamd; do
-    systemctl is-active --quiet "${svc}" \
-      || die "${svc} is not running. Check: journalctl -u ${svc}"
-    log "  ${svc}: active"
-  done
+  if [ "${SKIP_FRESHCLAM}" = "false" ]; then
+    systemctl is-active --quiet clamav-freshclam \
+      || die "clamav-freshclam is not running. Check: journalctl -u clamav-freshclam"
+    log "  clamav-freshclam: active"
+  fi
+
+  systemctl is-active --quiet clamd \
+    || die "clamd is not running. Check: journalctl -u clamd"
+  log "  clamd: active"
 
   log "ClamAV is up."
 }
