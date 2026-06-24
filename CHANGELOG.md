@@ -53,6 +53,26 @@ All notable changes to this project will be documented in this file.
   The script is fully idempotent: JDK, Tomcat, SNAP WAR, firewall rules, and
   ClamAV are each skipped on re-run if already present.
 
+## [v0.1.12] — 2026-06-24
+
+### Added
+
+#### ServiceNow (`servicenow/`)
+
+- `snow-deploy.sh` — BCFKS keystore conversion for Australia+ release
+  (KB0997653):
+  - `convert_cacerts_bcfks()` function converts the default Java `cacerts`
+    trust store from JKS to BCFKS format, required for outbound TLS connections
+    (app store, integrations, etc.) on Rome or later releases.
+  - `bc-fips-*.jar` is located dynamically from the installed node's
+    `lib/jsw/` directory — handles version differences across SNC releases.
+  - `05-cacerts.properties` written per instance in the JDK 21 branch pointing
+    SNC to the converted `cacerts.bcfks` trust store.
+  - Conversion runs automatically in `install_instance()` after JDK overrides
+    are written and before the systemd service starts.
+  - Idempotent: skips if `cacerts.bcfks` already exists; silently skips on
+    pre-Australia releases where bc-fips jar is absent.
+
 ## [v0.1.11] — 2026-06-18
 
 ### Fixed

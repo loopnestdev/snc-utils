@@ -445,6 +445,9 @@ glide.java.opts.snippet.nodeconfig.extra=-XX:CICompilerCount=12
 EOF
       ;;
     21)
+      cat > "${inst_path}/conf/overrides.d/05-cacerts.properties" <<EOF
+glide.java.opts.snippet.1=-Djavax.net.ssl.trustStore=${inst_path}/conf/overrides.d/cacerts.bcfks -Djavax.net.ssl.trustStorePassword=changeit -Djava.net.preferIPv4Stack=true
+EOF
       cat > "${inst_path}/conf/overrides.d/51-memory.properties" <<'EOF'
 glide.java.opts.snippet.nodeconfig.mem=-Xms2048m -Xmx4096m -XX:MaxMetaspaceSize=640m -XX:ReservedCodeCacheSize=240m -XX:MaxDirectMemorySize=256m -XX:-UseAdaptiveSizePolicy
 EOF
@@ -521,6 +524,31 @@ WantedBy=multi-user.target
 EOF
 }
 
+convert_cacerts_bcfks() {
+  local inst_path=$1
+  local dest="${inst_path}/conf/overrides.d/cacerts.bcfks"
+
+  [ -f "${dest}" ] && return 0
+
+  local bc_fips_jar
+  bc_fips_jar=$(find "${inst_path}/lib/jsw" -name "bc-fips-*.jar" 2>/dev/null | sort -V | tail -1)
+  [ -z "${bc_fips_jar}" ] && return 0
+
+  log "Converting cacerts JKS to BCFKS (${bc_fips_jar##*/})..."
+  "${JAVA_DIR}/bin/keytool" \
+    -importkeystore \
+    -srckeystore "${JAVA_DIR}/lib/security/cacerts" \
+    -srcstoretype JKS \
+    -srcstorepass changeit \
+    -destkeystore "${dest}" \
+    -deststoretype BCFKS \
+    -deststorepass changeit \
+    -provider org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider \
+    -providerpath "${bc_fips_jar}" \
+    -noprompt
+  log "cacerts BCFKS keystore written: ${dest}"
+}
+
 # ── STEP 9: INSTALL ONE SNC INSTANCE ─────────────────────────────────────────
 install_instance() {
   local seq=$1
@@ -545,6 +573,7 @@ install_instance() {
   write_glide_db_properties "${inst}"
   write_glide_properties     "${inst}" "${port}" "${node}"
   write_jdk_overrides        "${inst}"
+  convert_cacerts_bcfks      "${inst}"
   write_systemd_service      "${svc}"  "${inst}"
 
   chown -R "${SNC_USER}:${SNC_USER}" "${inst}"
