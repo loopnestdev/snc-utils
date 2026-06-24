@@ -398,3 +398,15 @@ All notable changes to this project will be documented in this file.
   - `--db_tls_min` default changed from `TLSv1.2` to `TLSv1.3`
   - `--media_dir` default changed from `/data/snow_media` to `/glide/media`
   - `--backup_dir` default changed from `/mnt/backup` to `/glide/backup`
+
+## [v0.1.21] — 2026-06-24
+
+### Added
+
+#### ServiceNow (`servicenow/`)
+
+- `snow-deploy.sh` — three additional TCP kernel parameters in `tune_system()`:
+  - `net.ipv4.tcp_tw_reuse = 1` — allow reuse of TIME_WAIT sockets for new connections
+  - `net.ipv4.tcp_fin_timeout = 30` — reduce FIN_WAIT2 timeout from the 60 s kernel default
+  - `net.ipv4.tcp_syn_retries = 3` — limit SYN retransmit attempts before failing a new connection
+  Each parameter is written idempotently (updates existing entry or appends) and applied immediately via `sysctl -w`.

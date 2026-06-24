@@ -290,6 +290,21 @@ tune_system() {
     || echo 'vm.swappiness = 1' >> /etc/sysctl.conf
   sysctl -w vm.swappiness=1
 
+  grep -q '^net.ipv4.tcp_tw_reuse' /etc/sysctl.conf \
+    && sed -i 's/^net.ipv4.tcp_tw_reuse.*/net.ipv4.tcp_tw_reuse = 1/' /etc/sysctl.conf \
+    || echo 'net.ipv4.tcp_tw_reuse = 1' >> /etc/sysctl.conf
+  sysctl -w net.ipv4.tcp_tw_reuse=1
+
+  grep -q '^net.ipv4.tcp_fin_timeout' /etc/sysctl.conf \
+    && sed -i 's/^net.ipv4.tcp_fin_timeout.*/net.ipv4.tcp_fin_timeout = 30/' /etc/sysctl.conf \
+    || echo 'net.ipv4.tcp_fin_timeout = 30' >> /etc/sysctl.conf
+  sysctl -w net.ipv4.tcp_fin_timeout=30
+
+  grep -q '^net.ipv4.tcp_syn_retries' /etc/sysctl.conf \
+    && sed -i 's/^net.ipv4.tcp_syn_retries.*/net.ipv4.tcp_syn_retries = 3/' /etc/sysctl.conf \
+    || echo 'net.ipv4.tcp_syn_retries = 3' >> /etc/sysctl.conf
+  sysctl -w net.ipv4.tcp_syn_retries=3
+
   cat >> /etc/security/limits.conf <<'LIMITS'
 * soft nproc  10240
 * soft nofile 16000
