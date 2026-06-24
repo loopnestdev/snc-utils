@@ -992,7 +992,7 @@ frontend snc-frontend
   log-tag snow
   log-format {\"timestamp\":\"%tr\",\"application\":\"snow\",\"client_ip\":\"%ci\",\"fe_name\":\"%f\",\"fe_ip\":\"%fi\",\"fe_port\":\"%fp\",\"fe_conn\":\"%fc\",\"be_name\":\"%b\",\"server_name\":\"%s\",\"server_ip\":\"%si\",\"server_port\":\"%sp\",\"srv_conn\":\"%sc\",\"http_method\":\"%HM\",\"http_proto\":\"https\",\"host\":\"%hrl\",\"http_uri\":\"%HU\",\"status_code\":\"%ST\",\"response_time\":\"%Tr\",\"bytes_read\":\"%B\",\"request_cookie\":\"%CC\",\"response_cookie\":\"%CS\",\"termination_state\":\"%ts\",\"active_conn\":\"%ac\",\"retries\":\"%rc\",\"srv_queue\":\"%sq\",\"backend_queue\":\"%bq\",\"x-unique-id\":\"%ID\"}
 
- acl is_be_healthy path /hello
+  acl is_be_healthy path /hello
     acl backends_down   nbsrv(snc-backend) lt 1
     http-request return status 503 content-type "text/plain" string "down" if is_be_healthy backends_down
     http-request return status 200 content-type "text/plain" string "ok"   if is_be_healthy
