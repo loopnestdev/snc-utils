@@ -330,3 +330,24 @@ All notable changes to this project will be documented in this file.
   - Silently no-ops when SELinux is `Disabled` or `getenforce` is absent.
   - `--skip_selinux` flag bypasses the function entirely (offline or
     Trellix-managed environments).
+
+## [v0.1.18] — 2026-06-24
+
+### Added
+
+#### ServiceNow (`servicenow/`)
+
+- `snow-deploy.sh` — KMF (Key Management Framework) keystore setup via new
+  `configure_kmf()` function, called per instance before service start:
+  - First VM, instance 1: creates `keystorekmf.bcfks` via `keytool -genseckey`
+    using the bc-fips jar bundled with the node, then saves a copy to
+    `media_dir` for distribution.
+  - First VM, instances 2–4 and all subsequent VMs: copies `keystorekmf.bcfks`
+    from `media_dir` (operator must pre-place the file from the first VM on
+    subsequent VMs).
+  - Writes `glide.kmf.keystore.properties` per instance pointing to the
+    keystore with the configured password and alias.
+  - Idempotent: skips keystore creation/copy if `keystorekmf.bcfks` already
+    exists; always rewrites the properties file.
+  - New arguments: `--kmf_password=<password>` (default: `changeit`),
+    `--kmf_alias=<alias>` (default: `256bitkey`), `--skip_kmf`.

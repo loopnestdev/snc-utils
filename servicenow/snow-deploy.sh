@@ -30,6 +30,9 @@ BACKUP_DIR="/mnt/backup"
 HAPROXY_STATPORT=14567
 SKIP_DEPS="false"
 SKIP_SELINUX="false"
+SKIP_KMF="false"
+KMF_PASSWORD="changeit"
+KMF_ALIAS="256bitkey"
 
 # ── USAGE ─────────────────────────────────────────────────────────────────────
 usage() {
@@ -70,6 +73,9 @@ usage() {
     --backup_dir=<path>           Backup destination directory       (default: /mnt/backup)
     --skip_deps                   Skip OS dependency installation (offline/pre-provisioned environments)
     --skip_selinux                Skip SELinux port labeling
+    --skip_kmf                    Skip KMF keystore configuration
+    --kmf_password=<password>     KMF keystore and key entry password    (default: changeit)
+    --kmf_alias=<alias>           KMF key alias inside the keystore      (default: 256bitkey)
     --help                        Show this help
 
   Prerequisites in --media_dir (default: /data/snow_media):
@@ -160,6 +166,9 @@ parse_args() {
       --backup_dir=*)       BACKUP_DIR="${1#*=}" ;;
       --skip_deps)          SKIP_DEPS="true" ;;
       --skip_selinux)       SKIP_SELINUX="true" ;;
+      --skip_kmf)           SKIP_KMF="true" ;;
+      --kmf_password=*)     KMF_PASSWORD="${1#*=}" ;;
+      --kmf_alias=*)        KMF_ALIAS="${1#*=}" ;;
       --help)               usage; exit 0 ;;
       *) die "Unknown argument: $1. Run $0 --help for usage." ;;
     esac
@@ -554,6 +563,59 @@ convert_cacerts_bcfks() {
   log "cacerts BCFKS keystore written: ${dest}"
 }
 
+configure_kmf() {
+  local inst_path=$1
+  local seq=$2
+
+  [ "${SKIP_KMF}" = "true" ] && return 0
+
+  local dest_keystore="${inst_path}/conf/overrides.d/keystorekmf.bcfks"
+  local dest_props="${inst_path}/conf/overrides.d/glide.kmf.keystore.properties"
+  local src_keystore="${MEDIA_DIR}/keystorekmf.bcfks"
+
+  if [ ! -f "${dest_keystore}" ]; then
+    if [ -f "${src_keystore}" ]; then
+      log "Copying KMF keystore from ${src_keystore}..."
+      cp "${src_keystore}" "${dest_keystore}"
+    elif [ "${seq}" -eq 1 ]; then
+      local bc_fips_jar
+      bc_fips_jar=$(find "${inst_path}/lib/jsw" -name "bc-fips-*.jar" 2>/dev/null | sort -V | tail -1)
+      [ -z "${bc_fips_jar}" ] && die "bc-fips jar not found in ${inst_path}/lib/jsw — cannot create KMF keystore."
+
+      log "Creating KMF keystore (${bc_fips_jar##*/})..."
+      "${JAVA_DIR}/bin/keytool" \
+        -genseckey \
+        -alias "${KMF_ALIAS}" \
+        -keyalg aes \
+        -keysize 256 \
+        -providername BCFIPS \
+        -providerclass org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider \
+        -providerpath "${bc_fips_jar}" \
+        -keystore "${dest_keystore}" \
+        -storetype bcfks \
+        -storepass "${KMF_PASSWORD}" \
+        -keypass "${KMF_PASSWORD}"
+
+      cp "${dest_keystore}" "${src_keystore}"
+      log "KMF keystore saved to ${src_keystore} for distribution to other instances and VMs."
+    else
+      die "KMF keystore not found in ${MEDIA_DIR}. Copy keystorekmf.bcfks from the first VM before running this script."
+    fi
+  fi
+
+  cat > "${dest_props}" <<EOF
+kmf.file.keystore.enabled=true
+kmf.file.keystore.path=conf/overrides.d
+kmf.file.keystore.name=keystorekmf.bcfks
+kmf.file.keystore.type=BCFKS
+kmf.file.keystore.password=${KMF_PASSWORD}
+kmf.file.keystore.imk.alias=${KMF_ALIAS}
+kmf.file.key.entry.password=${KMF_PASSWORD}
+EOF
+
+  log "KMF configuration written: ${dest_props}"
+}
+
 # ── STEP 9: INSTALL ONE SNC INSTANCE ─────────────────────────────────────────
 install_instance() {
   local seq=$1
@@ -579,6 +641,7 @@ install_instance() {
   write_glide_properties     "${inst}" "${port}" "${node}"
   write_jdk_overrides        "${inst}"
   convert_cacerts_bcfks      "${inst}"
+  configure_kmf              "${inst}" "${seq}"
   write_systemd_service      "${svc}"  "${inst}"
 
   chown -R "${SNC_USER}:${SNC_USER}" "${inst}"
