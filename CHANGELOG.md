@@ -432,3 +432,19 @@ All notable changes to this project will be documented in this file.
   - Truncates `sys_ha_database`, `sys_cluster_state`, and `sys_status`
     (each skipped with a log message if the table does not exist in the
     deployed release)
+
+## [v0.1.23] — 2026-06-24
+
+### Fixed
+
+#### ServiceNow (`servicenow/`)
+
+- `snow-deploy.sh` — HAProxy stats frontend `bind` directive was hardcoded to
+  port `14567` instead of using `${HAPROXY_STATPORT}`; now uses the variable.
+
+### Changed
+
+#### ServiceNow (`servicenow/`)
+
+- `snow-deploy.sh` — `--haproxy_statport` default changed from `14567` to `8000`
+- `snap-deploy.sh` — `--haproxy_stat_port` default changed from `9998` to `8000`

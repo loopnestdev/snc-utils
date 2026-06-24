@@ -28,7 +28,7 @@ SNAP_PORT="8080"                       # Tomcat HTTP port (127.0.0.1 only)
 CERT_FILE=""
 KEY_FILE=""
 HAPROXY_BIND_PORT="443"
-HAPROXY_STAT_PORT="9998"
+HAPROXY_STAT_PORT="8000"
 BACKEND_NODES=""                       # resolved to 127.0.0.1:SNAP_PORT in validate_args
 MODE="all"
 SNAP_USER="snapserver"
@@ -73,7 +73,7 @@ usage() {
     --clamav_version=<ver>       ClamAV package version suffix          (default: none)
     --freshclam_mirror=<url>     Freshclam database mirror URL          (default: database.clamav.net)
     --haproxy_bind_port=<port>   HAProxy HTTPS frontend port            (default: 443)
-    --haproxy_stat_port=<port>   HAProxy stats page port (loopback)     (default: 9998)
+    --haproxy_stat_port=<port>   HAProxy stats page port (loopback)     (default: 8000)
     --tomcat_svc=<name>          Tomcat systemd service name            (default: tomcat)
     --tomcat_user=<name>         OS user and group that owns Tomcat     (default: snapserver)
     --skip_deps                  Skip dnf package installation          (default: false)

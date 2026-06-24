@@ -27,7 +27,7 @@ SVC_PREFIX="snc"
 SNC_USER="servicenow"
 MEDIA_DIR="/glide/media"
 BACKUP_DIR="/glide/backup"
-HAPROXY_STATPORT=14567
+HAPROXY_STATPORT=8000
 SKIP_DEPS="false"
 SKIP_SELINUX="false"
 SKIP_KMF="false"
@@ -961,7 +961,7 @@ defaults
   timeout server-fin    10s
 
 frontend stats
-  bind                  *:14567
+  bind                  *:${HAPROXY_STATPORT}
   mode                  http
   stats                 enable
   stats                 hide-version
