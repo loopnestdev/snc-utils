@@ -562,6 +562,17 @@ All notable changes to this project will be documented in this file.
     (http-check send added in 2.2).
   - Added `tune.ssl.default-dh-param 2048` to suppress DH parameter warning.
 
+## [v0.1.33] — 2026-06-26
+
+### Fixed
+
+#### ServiceNow (`servicenow/`)
+
+- `parexport-deploy.sh` — replaced `http-after-response` (added in HAProxy 2.2)
+  with `http-response` (available since HAProxy 1.5/1.6) for HSTS and
+  Set-Cookie header manipulation. Behaviour is identical for client-facing
+  response header modification.
+
 ## [v0.1.32] — 2026-06-26
 
 ### Added

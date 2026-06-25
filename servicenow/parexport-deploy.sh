@@ -525,11 +525,11 @@ frontend parexport-frontend
   http-request          set-header X-Forwarded-Proto http  if !{ ssl_fc }
 
   # HSTS — configured at the load balancer (KB1632909)
-  http-after-response   set-header Strict-Transport-Security "max-age=63072000; includeSubDomains;"
+  http-response         set-header Strict-Transport-Security "max-age=63072000; includeSubDomains;"
 
   # Add HttpOnly and Secure flags to cookies not already bearing them (KB1632909)
-  http-after-response   replace-header Set-Cookie '(^((?!(?i)httponly).)*$)' "\1; HttpOnly"
-  http-after-response   replace-header Set-Cookie '(^((?!(?i)secure).)*$)'   "\1; Secure"
+  http-response         replace-header Set-Cookie '(^((?!(?i)httponly).)*$)' "\1; HttpOnly"
+  http-response         replace-header Set-Cookie '(^((?!(?i)secure).)*$)'   "\1; Secure"
 
   # Rewrite http→https in any Location redirects from PARExport (KB1632909)
   http-response         replace-header Location ^http://(.*)$ https://\1
