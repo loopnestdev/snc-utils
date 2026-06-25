@@ -508,7 +508,7 @@ frontend parexport-frontend
   option                forwardfor
   option                http-server-close
 
-  unique-id-format %[uuid()]
+  unique-id-format %{+X}o%ts%rt%pid
   unique-id-header X-Unique-ID
   log-tag parexport
   log-format {"timestamp":"%tr","application":"parexport","client_ip":"%ci","fe_name":"%f","fe_port":"%fp","be_name":"%b","server_name":"%s","server_ip":"%si","server_port":"%sp","http_method":"%HM","http_proto":"https","host":"%hrl","http_uri":"%HU","status_code":"%ST","response_time":"%Tr","bytes_read":"%B","termination_state":"%ts","active_conn":"%ac","x-unique-id":"%ID"}
