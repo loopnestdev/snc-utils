@@ -478,6 +478,19 @@ All notable changes to this project will be documented in this file.
   PARExport port is not opened in firewalld; HAProxy proxies to `localhost:PORT`
   internally. Configure ServiceNow via `glide.par.export.host`.
 
+## [v0.1.26] — 2026-06-25
+
+### Fixed
+
+#### ServiceNow (`servicenow/`)
+
+- `parexport-deploy.sh` — vendor `.bin` installer rejects RHEL 9 at the OS
+  version check (allowlist covers RHEL 7/8 only), even though the binaries are
+  compatible. `install_parexport()` now extracts the bundled archive directly
+  using the `__ARCHIVE_BELOW__` boundary (approach documented in KB0996068
+  troubleshooting) and runs the inner install script, bypassing the outer
+  OS-version gate.
+
 ## [v0.1.25] — 2026-06-25
 
 ### Fixed
