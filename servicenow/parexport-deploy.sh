@@ -20,12 +20,12 @@
 set -euo pipefail
 
 # ── DEFAULTS ──────────────────────────────────────────────────────────────────
-INSTALL_DIR="/opt/par-export"          # PARExport installation directory
+INSTALL_DIR="/glide/par-export"          # PARExport installation directory
 PAR_PORT="9999"                        # PARExport HTTP port
 CERT_FILE=""
 KEY_FILE=""
 HAPROXY_BIND_PORT="443"
-HAPROXY_STAT_PORT="9998"
+HAPROXY_STAT_PORT="8000"
 BACKEND_NODES=""                       # resolved to 127.0.0.1:PAR_PORT in validate_args
 MODE="all"
 PAR_USER="parexport"
@@ -50,11 +50,11 @@ usage() {
 
   Optional:
     --mode=<parexport|haproxy|all>  Deployment mode                      (default: all)
-    --install_dir=<path>            PARExport installation directory      (default: /opt/par-export)
+    --install_dir=<path>            PARExport installation directory      (default: /glide/par-export)
     --port=<port>                   PARExport HTTP port                   (default: 9999)
     --media_dir=<path>              Directory containing installer        (default: /glide/media)
     --haproxy_bind_port=<port>      HAProxy HTTPS frontend port           (default: 443)
-    --haproxy_stat_port=<port>      HAProxy stats page port (loopback)    (default: 9998)
+    --haproxy_stat_port=<port>      HAProxy stats page port (loopback)    (default: 8000)
     --par_user=<name>               OS user and group that owns PARExport (default: parexport)
     --par_svc=<name>                PARExport systemd service name        (default: parexport)
     --skip_deps                     Skip dnf package installation         (default: false)
@@ -377,8 +377,11 @@ global
   stats                 socket /var/lib/haproxy/stats
 
   # Enforce TLS 1.3 — no fallback to earlier versions (KB1632909)
-  ssl-default-bind-options    ssl-min-ver TLSv1.3 no-sslv3 no-tlsv10 no-tlsv11 no-tlsv12
-  ssl-default-bind-ciphersuites TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256
+  ssl-default-bind-curves         secp384r1:secp521r1:prime256v1
+  ssl-default-bind-options        ssl-min-ver TLSv1.3 no-sslv3 no-tlsv10 no-tlsv11 no-tlsv12
+  ssl-default-bind-ciphersuites   TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256
+  ssl-default-server-options      ssl-min-ver TLSv1.3
+  ssl-default-server-ciphersuites TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256
 
 defaults
   mode                  http
@@ -412,6 +415,18 @@ frontend parexport-frontend
   bind                  0.0.0.0:${HAPROXY_BIND_PORT} ssl crt /etc/haproxy/parexport-server.pem
   option                httplog
   option                forwardfor
+  option                http-server-close
+
+  unique-id-format %[uuid()]
+  unique-id-header X-Unique-ID
+  log-tag parexport
+  log-format {"timestamp":"%tr","application":"parexport","client_ip":"%ci","fe_name":"%f","fe_port":"%fp","be_name":"%b","server_name":"%s","server_ip":"%si","server_port":"%sp","http_method":"%HM","http_proto":"https","host":"%hrl","http_uri":"%HU","status_code":"%ST","response_time":"%Tr","bytes_read":"%B","termination_state":"%ts","active_conn":"%ac","x-unique-id":"%ID"}
+
+  # GCP Layer-4 LB health check endpoint — returns 200 ok when backends are up
+  acl is_be_healthy       path /hello
+  acl backends_down       nbsrv(parexport-backend) lt 1
+  http-request return status 503 content-type "text/plain" string "down" if is_be_healthy backends_down
+  http-request return status 200 content-type "text/plain" string "ok"   if is_be_healthy
 
   # Inform PARExport of the original request context (KB1632909)
   http-request          set-header X-Forwarded-Host  %[req.hdr(host)]
@@ -437,7 +452,8 @@ backend parexport-backend
   # Session persistence via load balancer cookie (KB1632909)
   cookie                PAREXPORTID insert indirect nocache httponly secure
 
-  option                httpchk GET /ping
+  option                httpchk
+  http-check send       meth GET uri /ping
 
 EOF
 

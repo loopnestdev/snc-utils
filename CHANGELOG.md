@@ -433,6 +433,22 @@ All notable changes to this project will be documented in this file.
     (each skipped with a log message if the table does not exist in the
     deployed release)
 
+## [v0.1.23] — 2026-06-24
+
+### Fixed
+
+#### ServiceNow (`servicenow/`)
+
+- `snow-deploy.sh` — HAProxy stats frontend `bind` directive was hardcoded to
+  port `14567` instead of using `${HAPROXY_STATPORT}`; now uses the variable.
+
+### Changed
+
+#### ServiceNow (`servicenow/`)
+
+- `snow-deploy.sh` — `--haproxy_statport` default changed from `14567` to `8000`
+- `snap-deploy.sh` — `--haproxy_stat_port` default changed from `9998` to `8000`
+
 ## [v0.1.24] — 2026-06-25
 
 ### Added
@@ -449,8 +465,9 @@ All notable changes to this project will be documented in this file.
     re-installation if the `par-export-server` binary is already present.
   - **haproxy** — installs and configures HAProxy as a TLSv1.3-only frontend
     (KB1632909: HSTS, `X-Forwarded-*` headers, `Location` rewrite, secure cookie
-    flags, `leastconn` balance, `PAREXPORTID` session cookie). Health check via
-    `GET /ping` (expects `PONG`).
+    flags, `leastconn` balance, `PAREXPORTID` session cookie, JSON structured
+    logging, `/hello` GCP LB health check ACL, DH parameter file, full
+    server-side TLS hardening). Health check via `GET /ping` (expects `PONG`).
   - **all** — both of the above on the same VM; intended for GCP Layer-4 TCP load
     balancer topology where each VM runs HAProxy `:443` → `127.0.0.1:PAR_PORT`.
 
@@ -461,18 +478,18 @@ All notable changes to this project will be documented in this file.
   PARExport port is not opened in firewalld; HAProxy proxies to `localhost:PORT`
   internally. Configure ServiceNow via `glide.par.export.host`.
 
-## [v0.1.23] — 2026-06-24
+## [v0.1.25] — 2026-06-25
 
 ### Fixed
 
 #### ServiceNow (`servicenow/`)
 
-- `snow-deploy.sh` — HAProxy stats frontend `bind` directive was hardcoded to
-  port `14567` instead of using `${HAPROXY_STATPORT}`; now uses the variable.
-
-### Changed
-
-#### ServiceNow (`servicenow/`)
-
-- `snow-deploy.sh` — `--haproxy_statport` default changed from `14567` to `8000`
-- `snap-deploy.sh` — `--haproxy_stat_port` default changed from `9998` to `8000`
+- `parexport-deploy.sh` — fixed CHANGELOG entry order (v0.1.24 was inserted before v0.1.23).
+- `parexport-deploy.sh` — HAProxy configuration brought in line with `snow-deploy.sh` standard:
+  - Added `ssl-default-bind-curves secp384r1:secp521r1:prime256v1`
+  - Added `ssl-default-server-options` and `ssl-default-server-ciphersuites` for server-side TLS hardening
+  - Added JSON structured `log-format` with `unique-id-format`/`unique-id-header`
+  - Added `/hello` ACL for GCP Layer-4 load balancer health checks (returns `200 ok`
+    when backends are up, `503 down` when none are available)
+  - Changed backend health check to `http-check send meth GET uri /ping`
+  - Removed `dhparam-2048.pem` — DH parameters are not used by TLS 1.3 (ECDHE only)
