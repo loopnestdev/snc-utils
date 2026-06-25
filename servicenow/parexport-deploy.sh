@@ -35,6 +35,7 @@ MODE="all"
 MEDIA_DIR="/glide/media"
 PAREXPORT_BIN=""                       # .bin installer filename in MEDIA_DIR (default method)
 PAREXPORT_RPM=""                       # RPM filename in MEDIA_DIR (alternative method)
+TLS_TERMINATION="haproxy"             # haproxy (default) or parexport
 SKIP_DEPS="false"
 SKIP_SELINUX="false"
 
@@ -48,53 +49,63 @@ usage() {
     --parexport_bin=<file>          PARExport .bin installer filename in media_dir (default)
     --parexport_rpm=<file>          PARExport RPM filename in media_dir (alternative)
 
-  Required (mode=haproxy or mode=all):
+  Required (mode=haproxy or mode=all, or when --tls_termination=parexport):
     --cert_file=<file>              TLS certificate filename (PEM) in media_dir
     --key_file=<file>               TLS private key filename (PEM) in media_dir
 
   Optional:
-    --mode=<parexport|haproxy|all>  Deployment mode                      (default: all)
-    --port=<port>                   PARExport HTTP port                   (default: 9999)
-    --media_dir=<path>              Directory containing installer        (default: /glide/media)
-    --haproxy_bind_port=<port>      HAProxy HTTPS frontend port           (default: 443)
-    --haproxy_stat_port=<port>      HAProxy stats page port (loopback)    (default: 8000)
-    --skip_deps                     Skip dnf package installation         (default: false)
-                                    Use in offline environments where packages are pre-installed
-    --skip_selinux                  Skip SELinux port labeling            (default: false)
-    --help                          Show this help
+    --mode=<parexport|haproxy|all>          Deployment mode                   (default: all)
+    --tls_termination=<haproxy|parexport>   Where TLS is terminated            (default: haproxy)
+    --port=<port>                           PARExport HTTP/HTTPS port          (default: 9999)
+    --media_dir=<path>                      Directory containing installer     (default: /glide/media)
+    --haproxy_bind_port=<port>              HAProxy HTTPS frontend port        (default: 443)
+    --haproxy_stat_port=<port>              HAProxy stats page port (loopback) (default: 8000)
+    --skip_deps                             Skip dnf package installation      (default: false)
+                                            Use in offline environments where packages are pre-installed
+    --skip_selinux                          Skip SELinux port labeling         (default: false)
+    --help                                  Show this help
 
-  Install methods:
+  Install methods (mutually exclusive):
     --parexport_bin   Runs the vendor .bin installer non-interactively. Temporarily
                       overrides /etc/redhat-release to RHEL 8 to bypass the installer's
                       OS check (RHEL 8/9 binaries are identical). Default method.
     --parexport_rpm   Installs the vendor RPM via dnf. Use on RHEL 8 where the RPM
-                      is compatible without any OS override. Mutually exclusive with
-                      --parexport_bin.
+                      is compatible without any OS override.
+
+  TLS termination:
+    haproxy     HAProxy terminates TLS on HAPROXY_BIND_PORT; PARExport runs plain
+                HTTP on 127.0.0.1:PORT internally. PARExport port is NOT opened in
+                firewalld. (default)
+    parexport   PARExport terminates TLS directly on PORT. cert_file and key_file
+                are copied to ${INSTALL_DIR}/ssl/ and configured via sysconfig.
+                PORT is opened in firewalld. Use mode=parexport for this topology.
 
   Modes:
     parexport  Install PARExport only.
-               PARExport binds to 0.0.0.0:PORT but that port is NOT opened
-               in firewalld — HAProxy proxies internally via localhost.
     haproxy    Install/configure HAProxy TLSv1.3 frontend only.
                Routes to 127.0.0.1:PORT on the same VM.
-    all        Install everything on this VM (standard deployment mode).
+    all        Install both on this VM.
                HAProxy :${HAPROXY_BIND_PORT} (TLSv1.3) → 127.0.0.1:PORT (PARExport)
 
   Notes:
     - Must be run as root
     - Target OS: RHEL 8 or RHEL 9
     - PARExport install dir, OS user, and systemd service are fixed by the vendor package (/opt/par-export, parexport)
-    - TLS is terminated at HAProxy; PARExport itself runs plain HTTP
-    - PARExport port is NOT opened in firewalld (HAProxy proxies internally)
     - SELinux port labels are applied when SELinux is enforcing
     - Run this script independently on each VM
 
-  Deployment topology:
+  Deployment topology (haproxy TLS, default):
     GCP Layer-4 TCP load balancer distributes connections across VMs.
     Run this script (--mode=all) on every VM in the pool:
 
     $0 --mode=all \\
-       --parexport_bin=par-export-4.x.x-xxxxxxxx.bin \\   # or --parexport_rpm=<file>
+       --parexport_bin=par-export-4.x.x-xxxxxxxx.bin \\
+       --cert_file=parexport.crt --key_file=parexport.key \\
+       --media_dir=/glide/media
+
+  Deployment topology (parexport TLS):
+    $0 --mode=parexport --tls_termination=parexport \\
+       --parexport_rpm=par-export-4.x.x.rpm \\
        --cert_file=parexport.crt --key_file=parexport.key \\
        --media_dir=/glide/media
 
@@ -138,6 +149,7 @@ parse_args() {
       --media_dir=*)          MEDIA_DIR="${1#*=}" ;;
       --parexport_bin=*)      PAREXPORT_BIN="${1#*=}" ;;
       --parexport_rpm=*)      PAREXPORT_RPM="${1#*=}" ;;
+      --tls_termination=*)    TLS_TERMINATION="${1#*=}" ;;
       --haproxy_bind_port=*)  HAPROXY_BIND_PORT="${1#*=}" ;;
       --haproxy_stat_port=*)  HAPROXY_STAT_PORT="${1#*=}" ;;
       --skip_deps)            SKIP_DEPS="true" ;;
@@ -169,10 +181,19 @@ validate_args() {
     fi
   fi
 
-  if [ "${MODE}" = "haproxy" ] || [ "${MODE}" = "all" ]; then
-    [ -n "${CERT_FILE}" ] || die "--cert_file is required for mode=${MODE}."
+  case "${TLS_TERMINATION}" in
+    haproxy|parexport) ;;
+    *) die "--tls_termination must be 'haproxy' or 'parexport'." ;;
+  esac
+
+  # cert/key required: always for haproxy/all modes; also for parexport mode when parexport terminates TLS
+  local need_certs="false"
+  [ "${MODE}" = "haproxy" ] || [ "${MODE}" = "all" ] && need_certs="true"
+  [ "${MODE}" = "parexport" ] && [ "${TLS_TERMINATION}" = "parexport" ] && need_certs="true"
+  if [ "${need_certs}" = "true" ]; then
+    [ -n "${CERT_FILE}" ] || die "--cert_file is required for mode=${MODE} with tls_termination=${TLS_TERMINATION}."
     [ -f "${MEDIA_DIR}/${CERT_FILE}" ] || die "Certificate file not found: ${MEDIA_DIR}/${CERT_FILE}"
-    [ -n "${KEY_FILE}" ]  || die "--key_file is required for mode=${MODE}."
+    [ -n "${KEY_FILE}" ]  || die "--key_file is required for mode=${MODE} with tls_termination=${TLS_TERMINATION}."
     [ -f "${MEDIA_DIR}/${KEY_FILE}" ]  || die "Key file not found: ${MEDIA_DIR}/${KEY_FILE}"
   fi
 
@@ -287,9 +308,25 @@ configure_parexport() {
   local sysconfig="/etc/sysconfig/parexport"
   [ -f "${sysconfig}" ] || touch "${sysconfig}"
 
-  # Update existing key or append if absent. HAProxy terminates TLS so
-  # HTTPS_ENABLED is false on the PARExport side.
-  for kv in "IS_SNOWK8S=false" "PRODUCTION=true" "HTTPS_ENABLED=false"; do
+  local https_enabled="false"
+  if [ "${TLS_TERMINATION}" = "parexport" ]; then
+    https_enabled="true"
+    local ssl_dir="${INSTALL_DIR}/ssl"
+    mkdir -p "${ssl_dir}"
+    cp "${MEDIA_DIR}/${CERT_FILE}" "${ssl_dir}/parexport.crt"
+    cp "${MEDIA_DIR}/${KEY_FILE}"  "${ssl_dir}/parexport.key"
+    chmod 600 "${ssl_dir}/parexport.key"
+    chown -R "${PAR_USER}:${PAR_GROUP}" "${ssl_dir}"
+  fi
+
+  # Update existing key or append if absent.
+  local -a kvs=("IS_SNOWK8S=false" "PRODUCTION=true" "HTTPS_ENABLED=${https_enabled}")
+  if [ "${TLS_TERMINATION}" = "parexport" ]; then
+    kvs+=("SSL_CERT_FILE=${INSTALL_DIR}/ssl/parexport.crt")
+    kvs+=("SSL_KEY_FILE=${INSTALL_DIR}/ssl/parexport.key")
+  fi
+
+  for kv in "${kvs[@]}"; do
     local key="${kv%%=*}" val="${kv#*=}"
     if grep -q "^${key}[[:space:]]*=" "${sysconfig}"; then
       sed -i "s|^${key}[[:space:]]*=.*|${key}=${val}|" "${sysconfig}"
@@ -298,7 +335,7 @@ configure_parexport() {
     fi
   done
 
-  log "sysconfig configured (HTTPS_ENABLED=false; TLS terminated at HAProxy)."
+  log "sysconfig configured (HTTPS_ENABLED=${https_enabled}; TLS termination: ${TLS_TERMINATION})."
 }
 
 # ── STEP 5: SELINUX PORT LABELS ───────────────────────────────────────────────
@@ -343,14 +380,24 @@ configure_firewall() {
 
   log "Updating firewalld rules..."
 
-  # PAR_PORT is NOT opened externally — PARExport is reachable only via HAProxy.
-  if [ "${MODE}" = "haproxy" ] || [ "${MODE}" = "all" ]; then
-    if firewall-cmd --permanent --query-port="${HAPROXY_BIND_PORT}/tcp" &>/dev/null; then
-      log "  TCP/${HAPROXY_BIND_PORT} (HAProxy HTTPS) already open, skipping."
+  open_port() {
+    local port=$1 desc=$2
+    if firewall-cmd --permanent --query-port="${port}/tcp" &>/dev/null; then
+      log "  TCP/${port} (${desc}) already open, skipping."
     else
-      firewall-cmd --permanent --add-port="${HAPROXY_BIND_PORT}/tcp"
-      log "  Opened TCP/${HAPROXY_BIND_PORT} (HAProxy HTTPS)."
+      firewall-cmd --permanent --add-port="${port}/tcp"
+      log "  Opened TCP/${port} (${desc})."
     fi
+  }
+
+  if [ "${MODE}" = "haproxy" ] || [ "${MODE}" = "all" ]; then
+    open_port "${HAPROXY_BIND_PORT}" "HAProxy HTTPS"
+  fi
+
+  # Open PAR_PORT directly only when PARExport itself terminates TLS
+  if { [ "${MODE}" = "parexport" ] || [ "${MODE}" = "all" ]; } \
+       && [ "${TLS_TERMINATION}" = "parexport" ]; then
+    open_port "${PAR_PORT}" "PARExport HTTPS"
   fi
 
   firewall-cmd --reload
@@ -367,10 +414,14 @@ enable_parexport() {
 }
 
 verify_parexport() {
+  local scheme="http"
+  local curl_opts="-s --max-time 5"
+  [ "${TLS_TERMINATION}" = "parexport" ] && scheme="https" && curl_opts="${curl_opts} -k"
+
   log "Waiting for PARExport to respond on 127.0.0.1:${PAR_PORT}/ping..."
   local attempt=0 max=12
 
-  until curl -s --max-time 5 "http://127.0.0.1:${PAR_PORT}/ping" 2>/dev/null | grep -q "PONG"; do
+  until curl ${curl_opts} "${scheme}://127.0.0.1:${PAR_PORT}/ping" 2>/dev/null | grep -q "PONG"; do
     attempt=$(( attempt + 1 ))
     [ "${attempt}" -ge "${max}" ] \
       && die "PARExport did not respond after $(( max * 5 ))s. Check: journalctl -u ${PAR_SVC}"
@@ -378,7 +429,7 @@ verify_parexport() {
     sleep 5
   done
 
-  log "PARExport is up on 127.0.0.1:${PAR_PORT}."
+  log "PARExport is up on 127.0.0.1:${PAR_PORT} (${scheme})."
 }
 
 # ── STEP 8: HAPROXY ───────────────────────────────────────────────────────────
@@ -578,6 +629,7 @@ main() {
   log "PARExport Server Deployment"
   log "  Host            : $(hostname -f)"
   log "  Mode            : ${MODE}"
+  log "  TLS termination : ${TLS_TERMINATION}"
   if [ "${MODE}" = "parexport" ] || [ "${MODE}" = "all" ]; then
     if [ -n "${PAREXPORT_RPM}" ]; then
       log "  Installer       : ${PAREXPORT_RPM} (RPM)"
@@ -585,7 +637,11 @@ main() {
       log "  Installer       : ${PAREXPORT_BIN} (.bin)"
     fi
     log "  Install dir     : ${INSTALL_DIR}"
-    log "  PARExport port  : 127.0.0.1:${PAR_PORT} (HTTP, TLS terminated at HAProxy)"
+    if [ "${TLS_TERMINATION}" = "parexport" ]; then
+      log "  PARExport port  : 0.0.0.0:${PAR_PORT} (HTTPS, TLS terminated at PARExport)"
+    else
+      log "  PARExport port  : 127.0.0.1:${PAR_PORT} (HTTP, TLS terminated at HAProxy)"
+    fi
   fi
   if [ "${MODE}" = "haproxy" ] || [ "${MODE}" = "all" ]; then
     log "  HAProxy frontend: 0.0.0.0:${HAPROXY_BIND_PORT} (TLSv1.3)"
@@ -618,7 +674,11 @@ main() {
   log "============================================================"
   log "Deployment complete on $(hostname -f)"
   if [ "${MODE}" = "parexport" ] || [ "${MODE}" = "all" ]; then
-    log "  PARExport health : curl http://127.0.0.1:${PAR_PORT}/ping"
+    if [ "${TLS_TERMINATION}" = "parexport" ]; then
+      log "  PARExport health : curl -k https://127.0.0.1:${PAR_PORT}/ping"
+    else
+      log "  PARExport health : curl http://127.0.0.1:${PAR_PORT}/ping"
+    fi
     log "  Service          : systemctl status ${PAR_SVC}"
   fi
   if [ "${MODE}" = "haproxy" ] || [ "${MODE}" = "all" ]; then

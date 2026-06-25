@@ -562,6 +562,24 @@ All notable changes to this project will be documented in this file.
     (http-check send added in 2.2).
   - Added `tune.ssl.default-dh-param 2048` to suppress DH parameter warning.
 
+## [v0.1.32] — 2026-06-26
+
+### Added
+
+#### ServiceNow (`servicenow/`)
+
+- `parexport-deploy.sh` — added `--tls_termination=haproxy|parexport` option
+  (default: `haproxy`) to choose where TLS is terminated:
+  - `haproxy` (existing behaviour): HAProxy terminates TLS on
+    `HAPROXY_BIND_PORT`; PARExport runs plain HTTP on `127.0.0.1:PORT`
+    internally. `PORT` is not exposed in firewalld.
+  - `parexport`: PARExport terminates TLS directly. `--cert_file` and
+    `--key_file` are copied to `${INSTALL_DIR}/ssl/` and `SSL_CERT_FILE` /
+    `SSL_KEY_FILE` are written to `/etc/sysconfig/parexport` alongside
+    `HTTPS_ENABLED=true`. `PORT` is opened in firewalld. `verify_parexport`
+    probes `https://127.0.0.1:PORT/ping` with `-k` (self-signed cert allowed).
+    Intended for use with `--mode=parexport` (no HAProxy required).
+
 ## [v0.1.30] — 2026-06-25
 
 ### Changed
