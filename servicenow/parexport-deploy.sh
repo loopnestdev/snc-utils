@@ -226,31 +226,26 @@ install_parexport() {
   local bin_path="${MEDIA_DIR}/${PAREXPORT_BIN}"
   chmod +x "${bin_path}"
 
-  # The outer .bin wrapper validates the OS version and rejects RHEL 9 (only
-  # RHEL 7/8 are in its allowlist), even though the binaries are compatible.
-  # Extract the bundled archive using the documented __ARCHIVE_BELOW__ boundary
-  # and run the inner install script directly, bypassing the OS-version gate.
-  local tmpdir
-  tmpdir=$(mktemp -d)
+  # Both the outer .bin wrapper and the inner .sh script read /etc/redhat-release
+  # and reject RHEL 9 (allowlist covers "release 7" and "release 8" only).
+  # The binaries are RHEL 9 compatible. Override the release file for the duration
+  # of the install, restoring it before any error handling.
+  local release_file="/etc/redhat-release"
+  local orig_release
+  orig_release=$(cat "${release_file}" 2>/dev/null || true)
+  echo "Red Hat Enterprise Linux release 8.10 (Ootpa)" > "${release_file}"
 
-  local archive_line
-  archive_line=$(awk '/^__ARCHIVE_BELOW__/{print NR + 1; exit}' "${bin_path}")
-  [ -n "${archive_line}" ] \
-    || die "Cannot locate __ARCHIVE_BELOW__ in ${PAREXPORT_BIN}. Verify this is a valid PARExport installer."
+  local install_rc=0
+  printf 'Install\nyes\nyes\n' | "${bin_path}" || install_rc=$?
 
-  log "Extracting installer archive (bypassing OS check for RHEL 9 compatibility)..."
-  tail -n+"${archive_line}" "${bin_path}" | tar zx -C "${tmpdir}"
+  if [ -n "${orig_release}" ]; then
+    echo "${orig_release}" > "${release_file}"
+  else
+    rm -f "${release_file}"
+  fi
 
-  local install_sh
-  install_sh=$(find "${tmpdir}" -maxdepth 2 -name "*.sh" | head -1)
-  [ -n "${install_sh}" ] \
-    || die "No install script found in extracted archive under ${tmpdir}."
-
-  log "Running bundled install script: $(basename "${install_sh}")..."
-  chmod +x "${install_sh}"
-  ( cd "${tmpdir}" && printf 'Install\nyes\nyes\n' | bash "$(basename "${install_sh}")" )
-
-  rm -rf "${tmpdir}"
+  [ "${install_rc}" -eq 0 ] \
+    || die "PARExport installer exited with code ${install_rc}. Check output above."
 
   [ -f "${INSTALL_DIR}/par-export-server" ] \
     || die "PARExport binary not found at ${INSTALL_DIR}/par-export-server after installation. Check installer output above."

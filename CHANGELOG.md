@@ -478,19 +478,6 @@ All notable changes to this project will be documented in this file.
   PARExport port is not opened in firewalld; HAProxy proxies to `localhost:PORT`
   internally. Configure ServiceNow via `glide.par.export.host`.
 
-## [v0.1.26] — 2026-06-25
-
-### Fixed
-
-#### ServiceNow (`servicenow/`)
-
-- `parexport-deploy.sh` — vendor `.bin` installer rejects RHEL 9 at the OS
-  version check (allowlist covers RHEL 7/8 only), even though the binaries are
-  compatible. `install_parexport()` now extracts the bundled archive directly
-  using the `__ARCHIVE_BELOW__` boundary (approach documented in KB0996068
-  troubleshooting) and runs the inner install script, bypassing the outer
-  OS-version gate.
-
 ## [v0.1.25] — 2026-06-25
 
 ### Fixed
@@ -506,3 +493,29 @@ All notable changes to this project will be documented in this file.
     when backends are up, `503 down` when none are available)
   - Changed backend health check to `http-check send meth GET uri /ping`
   - Removed `dhparam-2048.pem` — DH parameters are not used by TLS 1.3 (ECDHE only)
+
+## [v0.1.26] — 2026-06-25
+
+### Fixed
+
+#### ServiceNow (`servicenow/`)
+
+- `parexport-deploy.sh` — vendor `.bin` installer rejects RHEL 9 at the OS
+  version check (allowlist covers RHEL 7/8 only), even though the binaries are
+  compatible. `install_parexport()` now extracts the bundled archive directly
+  using the `__ARCHIVE_BELOW__` boundary (approach documented in KB0996068
+  troubleshooting) and runs the inner install script, bypassing the outer
+  OS-version gate.
+
+## [v0.1.27] — 2026-06-25
+
+### Fixed
+
+#### ServiceNow (`servicenow/`)
+
+- `parexport-deploy.sh` — the inner bundled install script (`par-export-*.sh`)
+  also validates `/etc/redhat-release` and rejects RHEL 9, so bypassing the
+  outer `.bin` wrapper alone was insufficient. `install_parexport()` now
+  temporarily overrides `/etc/redhat-release` with an RHEL 8 string for the
+  duration of the install, then restores the original content (or removes the
+  file if it did not previously exist) before any error handling.
