@@ -73,10 +73,11 @@ do
 done
 
 # CHECK RESULTS
-RESULTS=`grep 0 $RESULT_LIST | wc -l`
+RESULTS=$(grep -c '^0$' "$RESULT_LIST")
+EXPECTED_INSTANCES=$(find "$SRC_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l)
 echo -n ", End:$(ts)" >> $LOG_FILE
 
-if [ $RESULTS == "4" ]; then
+if [ "$RESULTS" -eq "$EXPECTED_INSTANCES" ]; then
   echo ", Exit:0. DONE" >> $LOG_FILE
 else
   echo ", Exit:1. ERROR" >> $LOG_FILE
