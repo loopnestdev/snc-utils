@@ -43,8 +43,8 @@ done
 
 # VARIABLES
 export LOG_DIR=${log_dir}
-export LOG_FILE=${LOG_DIR}/sncBackup.log
-export TS=`date '+%Y%m%d-%R'`
+export LOG_FILE=${LOG_DIR}/snow-backup.log
+export TS=`date '+%Y%m%d'`
 export SRC_DIR=${src_dir}
 export DES_DIR=${des_dir}/$TS
 export INSTANCE_LIST=/tmp/instance.list
@@ -55,9 +55,12 @@ test ! -d ${SRC_DIR} && exit 0
 test -f ${INSTANCE_LIST} && rm -f ${INSTANCE_LIST}
 test -f ${RESULT_LIST} && rm -f ${RESULT_LIST}
 
+# FUNCTIONS
+ts() {
+  date +"%Y-%m-%d %H:%M:%S.%3N"
+}
 
-export NOW=`date '+%Y-%m-%d %H:%M:%S'`
-echo -n "Start:$NOW" >> $LOG_FILE
+echo -n "Start:$(ts)" >> $LOG_FILE
 
 # LIST INSTANCES
 ls $SRC_DIR | grep -v [.] > $INSTANCE_LIST
@@ -71,8 +74,7 @@ done
 
 # CHECK RESULTS
 RESULTS=`grep 0 $RESULT_LIST | wc -l`
-export NOW=`date '+%Y-%m-%d %H:%M:%S'`
-echo -n ", End:$NOW" >> $LOG_FILE
+echo -n ", End:$(ts)" >> $LOG_FILE
 
 if [ $RESULTS == "4" ]; then
   echo ", Exit:0. DONE" >> $LOG_FILE
