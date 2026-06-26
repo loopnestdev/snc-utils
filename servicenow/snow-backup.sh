@@ -8,6 +8,7 @@ usage() {
       [--src_dir=src_dir]   -> /data/glide/nodes
       [--des_dir=des_dir]   -> /mnt/backup
       [--log_dir=log_dir]   -> /data/glide/logs
+      [--num_instances=num_instances]   -> 2 or 4
       [--help]
 
 EOUSAGE
@@ -29,7 +30,10 @@ while [ $# -gt 0 ]; do
       ;;
     --log_dir=*)
       log_dir="${1#*=}"
-      ;;      
+      ;;
+    --num_instances=*)
+      num_instances="${1#*=}"
+      ;;
     --help=*)
       usage
       exit
@@ -74,10 +78,9 @@ done
 
 # CHECK RESULTS
 RESULTS=$(grep -c '^0$' "$RESULT_LIST")
-EXPECTED_INSTANCES=$(find "$SRC_DIR" -maxdepth 1 -mindepth 1 -type d | wc -l)
 echo -n ", End:$(ts)" >> $LOG_FILE
 
-if [ "$RESULTS" -eq "$EXPECTED_INSTANCES" ]; then
+if [ "$RESULTS" -eq "$num_instances" ]; then
   echo ", Exit:0. DONE" >> $LOG_FILE
 else
   echo ", Exit:1. ERROR" >> $LOG_FILE
