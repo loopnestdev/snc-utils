@@ -601,6 +601,16 @@ All notable changes to this project will be documented in this file.
   added in HAProxy 2.4) with `%{+X}o%ts%rt%pid` (hex-encoded timestamp +
   request counter + PID), which produces a unique-per-request ID on HAProxy 1.8.
 
+## [v0.1.35] — 2026-06-26
+
+### Fixed
+
+#### ServiceNow (`servicenow/`)
+
+- `parexport-deploy.sh` — corrected sysconfig env var names for TLS cert and key
+  when `--tls_termination=parexport`: `SSL_CERT_FILE` → `CERT_PATH`,
+  `SSL_KEY_FILE` → `KEY_PATH`.
+
 ## [v0.1.30] — 2026-06-25
 
 ### Changed

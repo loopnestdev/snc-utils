@@ -322,8 +322,8 @@ configure_parexport() {
   # Update existing key or append if absent.
   local -a kvs=("IS_SNOWK8S=false" "PRODUCTION=true" "HTTPS_ENABLED=${https_enabled}")
   if [ "${TLS_TERMINATION}" = "parexport" ]; then
-    kvs+=("SSL_CERT_FILE=${INSTALL_DIR}/ssl/parexport.crt")
-    kvs+=("SSL_KEY_FILE=${INSTALL_DIR}/ssl/parexport.key")
+    kvs+=("CERT_PATH=${INSTALL_DIR}/ssl/parexport.crt")
+    kvs+=("KEY_PATH=${INSTALL_DIR}/ssl/parexport.key")
   fi
 
   for kv in "${kvs[@]}"; do
