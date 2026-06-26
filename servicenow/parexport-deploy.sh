@@ -25,7 +25,8 @@ readonly PAR_USER="parexport"
 readonly PAR_GROUP="parexport"
 readonly PAR_SVC="parexport"
 
-PAR_PORT="9999"                        # PARExport HTTP port
+PAR_PORT="9999"                        # PARExport HTTP port (443 when tls_termination=parexport)
+PAR_PORT_SET="false"                   # true when --port is explicitly passed
 CERT_FILE=""
 KEY_FILE=""
 HAPROXY_BIND_PORT="443"
@@ -56,7 +57,7 @@ usage() {
   Optional:
     --mode=<parexport|haproxy|all>          Deployment mode                   (default: all)
     --tls_termination=<haproxy|parexport>   Where TLS is terminated            (default: haproxy)
-    --port=<port>                           PARExport HTTP/HTTPS port          (default: 9999)
+    --port=<port>                           PARExport HTTP/HTTPS port          (default: 443 when --tls_termination=parexport, else 9999)
     --media_dir=<path>                      Directory containing installer     (default: /glide/media)
     --haproxy_bind_port=<port>              HAProxy HTTPS frontend port        (default: 443)
     --haproxy_stat_port=<port>              HAProxy stats page port (loopback) (default: 8000)
@@ -143,7 +144,7 @@ parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --mode=*)               MODE="${1#*=}" ;;
-      --port=*)               PAR_PORT="${1#*=}" ;;
+      --port=*)               PAR_PORT="${1#*=}"; PAR_PORT_SET="true" ;;
       --cert_file=*)          CERT_FILE="${1#*=}" ;;
       --key_file=*)           KEY_FILE="${1#*=}" ;;
       --media_dir=*)          MEDIA_DIR="${1#*=}" ;;
@@ -185,6 +186,11 @@ validate_args() {
     haproxy|parexport) ;;
     *) die "--tls_termination must be 'haproxy' or 'parexport'." ;;
   esac
+
+  # Apply smart default: port 443 when PARExport itself terminates TLS
+  if [ "${PAR_PORT_SET}" = "false" ] && [ "${TLS_TERMINATION}" = "parexport" ]; then
+    PAR_PORT="443"
+  fi
 
   # cert/key required: always for haproxy/all modes; also for parexport mode when parexport terminates TLS
   local need_certs="false"
@@ -336,6 +342,28 @@ configure_parexport() {
   done
 
   log "sysconfig configured (HTTPS_ENABLED=${https_enabled}; TLS termination: ${TLS_TERMINATION})."
+
+  # Systemd drop-in: override ExecStart to pass --port so the vendor unit file
+  # does not need to be edited directly (survives package upgrades).
+  # CAP_NET_BIND_SERVICE is added when the port is privileged (< 1024) so the
+  # parexport user can bind to e.g. 443 without running as root.
+  local override_dir="/etc/systemd/system/${PAR_SVC}.service.d"
+  mkdir -p "${override_dir}"
+  if [ "${PAR_PORT}" -lt 1024 ]; then
+    cat > "${override_dir}/port.conf" <<OVERRIDE
+[Service]
+ExecStart=
+ExecStart=${INSTALL_DIR}/par-export-server --production --port ${PAR_PORT}
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+OVERRIDE
+  else
+    cat > "${override_dir}/port.conf" <<OVERRIDE
+[Service]
+ExecStart=
+ExecStart=${INSTALL_DIR}/par-export-server --production --port ${PAR_PORT}
+OVERRIDE
+  fi
+  log "Systemd drop-in written: ${override_dir}/port.conf (--port ${PAR_PORT})."
 }
 
 # ── STEP 5: SELINUX PORT LABELS ───────────────────────────────────────────────

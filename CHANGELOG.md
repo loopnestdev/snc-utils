@@ -544,6 +544,20 @@ All notable changes to this project will be documented in this file.
   matching the values imposed by the vendor RPM package. The flags
   `--install_dir`, `--par_user`, and `--par_svc` have been removed.
 
+## [v0.1.30] — 2026-06-25
+
+### Changed
+
+#### ServiceNow (`servicenow/`)
+
+- `parexport-deploy.sh` — replaced `--skip_install` with an explicit
+  `--parexport_rpm=<file>` install method. Two mutually exclusive methods are
+  now supported: `--parexport_bin` (default; runs the vendor `.bin` installer
+  with the RHEL 8 `/etc/redhat-release` override, works on RHEL 8/9) and
+  `--parexport_rpm` (installs the vendor RPM via `dnf`, for native RHEL 8
+  deployments). Exactly one is required for `mode=parexport` or `mode=all`.
+  Target OS note updated to RHEL 8 or RHEL 9.
+
 ## [v0.1.31] — 2026-06-26
 
 ### Fixed
@@ -611,16 +625,17 @@ All notable changes to this project will be documented in this file.
   when `--tls_termination=parexport`: `SSL_CERT_FILE` → `CERT_PATH`,
   `SSL_KEY_FILE` → `KEY_PATH`.
 
-## [v0.1.30] — 2026-06-25
+## [v0.2.0] — 2026-06-26
 
-### Changed
+### Added
 
 #### ServiceNow (`servicenow/`)
 
-- `parexport-deploy.sh` — replaced `--skip_install` with an explicit
-  `--parexport_rpm=<file>` install method. Two mutually exclusive methods are
-  now supported: `--parexport_bin` (default; runs the vendor `.bin` installer
-  with the RHEL 8 `/etc/redhat-release` override, works on RHEL 8/9) and
-  `--parexport_rpm` (installs the vendor RPM via `dnf`, for native RHEL 8
-  deployments). Exactly one is required for `mode=parexport` or `mode=all`.
-  Target OS note updated to RHEL 8 or RHEL 9.
+- `parexport-deploy.sh` — `--port` now defaults to `443` when
+  `--tls_termination=parexport` (port `9999` remains the default for HAProxy
+  termination). The active port is passed to the binary via a systemd drop-in
+  (`/etc/systemd/system/parexport.service.d/port.conf`) using the `--port` CLI
+  argument, overriding the vendor unit's hardcoded default without editing the
+  vendor-managed service file. `AmbientCapabilities=CAP_NET_BIND_SERVICE` is
+  included in the drop-in when the port is privileged (< 1024) so the
+  `parexport` non-root user can bind to port 443 without running as root.
