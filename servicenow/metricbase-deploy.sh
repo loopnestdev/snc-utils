@@ -168,9 +168,9 @@ validate_args() {
   [ -z "${NODE_NAME}" ] && NODE_NAME="$(hostname -s)"
 
   # Extract version from zip filename: clotho-dist-<version>-dist.zip
-  MB_VERSION=$(echo "${DIST_ZIP}" | sed 's/clotho-dist-\(.*\)-dist\.zip/\1/')
+  MB_VERSION=$(echo "${DIST_ZIP}" | sed 's/clotho-dist-\(.*\)\.zip/\1/')
   [ "${MB_VERSION}" = "${DIST_ZIP}" ] \
-    && die "Cannot extract version from dist zip filename: ${DIST_ZIP}. Expected format: clotho-dist-<version>-dist.zip"
+    && die "Cannot extract version from dist zip filename: ${DIST_ZIP}. Expected format: clotho-dist-<version>.zip"
 
   NODE_DIR="${INSTALL_DIR}/${NODE_NAME}_${PORT}"
 
