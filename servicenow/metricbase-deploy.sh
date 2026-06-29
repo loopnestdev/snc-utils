@@ -69,7 +69,7 @@ usage() {
     --help                          Show this help
 
   Prerequisites in --media_dir (default: /glide/media):
-    - clotho-dist-<version>-dist.zip    MetricBase distribution zip
+    - clotho-dist-<version>.zip    MetricBase distribution zip
     - <jdk_tarball>                     JDK 17 tarball (e.g. jdk-17.0.x_linux-x64_bin.tar.gz)
     - metricbase-backup.sh              Backup script (installed to <install_dir>/bin/)
 
@@ -80,13 +80,13 @@ usage() {
     - For HA, run this script on both nodes pointing --peer_host at the other
 
   Example (standalone):
-    $0 --dist_zip=clotho-dist-25.1.0.15-dist.zip \\
+    $0 --dist_zip=clotho-dist-25.1.0.15.zip \\
        --jdk_tarball=jdk-17.0.11_linux-x64_bin.tar.gz \\
        --mb_admin_password=S3cur3Admin! \\
        --mb_backup_password=BackupP4ss!
 
   Example (HA node A, peer is node-b):
-    $0 --dist_zip=clotho-dist-25.1.0.15-dist.zip \\
+    $0 --dist_zip=clotho-dist-25.1.0.15.zip \\
        --jdk_tarball=jdk-17.0.11_linux-x64_bin.tar.gz \\
        --mb_admin_password=S3cur3Admin! \\
        --mb_backup_password=BackupP4ss! \\
@@ -164,10 +164,10 @@ validate_args() {
 
   [ -z "${NODE_NAME}" ] && NODE_NAME="$(hostname -s)"
 
-  # Extract version from zip filename: clotho-dist-<version>-dist.zip
-  MB_VERSION=$(echo "${DIST_ZIP}" | sed 's/clotho-dist-\(.*\)-dist\.zip/\1/')
+  # Extract version from zip filename: clotho-dist-<version>.zip
+  MB_VERSION=$(echo "${DIST_ZIP}" | sed 's/clotho-dist-\(.*\)\.zip/\1/')
   [ "${MB_VERSION}" = "${DIST_ZIP}" ] \
-    && die "Cannot parse version from dist zip name: ${DIST_ZIP}. Expected: clotho-dist-<version>-dist.zip"
+    && die "Cannot parse version from dist zip name: ${DIST_ZIP}. Expected: clotho-dist-<version>.zip"
 
   log "Resolved: version=${MB_VERSION}, install_dir=${INSTALL_DIR}"
 }
