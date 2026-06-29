@@ -19,6 +19,10 @@ Desktop.ini
 CLAUDE.md
 **/CLAUDE.md
 
+# Knowledge base / installation instructions (not for version control)
+*Installation-Instructions*.md
+*Installation-Instructions*.pdf
+
 # Shell script artifacts
 *.log
 *.tmp
