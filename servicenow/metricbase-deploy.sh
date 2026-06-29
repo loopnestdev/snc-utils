@@ -1,8 +1,8 @@
 #!/bin/bash
 # Deploy ServiceNow MetricBase (Clotho) on RHEL 9 / Rocky Linux 9.
 #
-# Installs a single MetricBase node under /glide/clotho/<name>_<port>/,
-# optionally configures HA replication with a peer node, creates initial
+# Installs MetricBase directly under --install_dir (default: /glide/clotho).
+# Optionally configures HA replication with a peer node, creates initial
 # admin and backup users, and schedules backup cron jobs:
 #   - Weekly full backup  (Sunday 02:00)
 #   - Differential backup every N hours (configurable, default 6)
@@ -36,7 +36,6 @@ SKIP_SELINUX="false"
 
 # Derived — set in validate_args
 MB_VERSION=""
-NODE_DIR=""
 
 # ── USAGE ─────────────────────────────────────────────────────────────────────
 usage() {
@@ -48,24 +47,23 @@ usage() {
     --dist_zip=<file>               clotho-dist-<version>-dist.zip filename in media_dir
     --jdk_tarball=<file>            JDK 17 tarball filename in media_dir
     --mb_admin_password=<password>  Initial MetricBase admin user password
-    --mb_backup_password=<password> MetricBase backup user (dbi_backup) password
+    --mb_backup_password=<password> MetricBase backup user password
 
   Optional:
-    --install_dir=<path>            Base MetricBase install directory  (default: /glide/clotho)
-    --media_dir=<path>              Directory containing installer and JDK
-                                                                       (default: /glide/media)
-    --full_backup_dir=<path>         Full backup destination             (default: /glide/backup/metricbase/full)
-    --diff_backup_dir=<path>         Differential backup destination     (default: /glide/backup/metricbase/diff)
-    --diff_interval=<hours>          Differential backup interval        (default: 6)
-    --node_name=<name>              MetricBase server name              (default: hostname -s)
-    --port=<port>                   MetricBase listener port            (default: 3400)
-    --mb_admin_user=<user>          Admin username                      (default: admin)
-    --mb_backup_user=<user>         Backup username                     (default: dbi_backup)
-    --heap_size=<GB>                Max JVM heap in GB                  (default: 8)
+    --install_dir=<path>            MetricBase install directory           (default: /glide/clotho)
+    --media_dir=<path>              Directory containing installer and JDK (default: /glide/media)
+    --full_backup_dir=<path>        Full backup destination                (default: /glide/backup/metricbase/full)
+    --diff_backup_dir=<path>        Differential backup destination        (default: /glide/backup/metricbase/diff)
+    --diff_interval=<hours>         Differential backup interval in hours  (default: 6)
+    --node_name=<name>              MetricBase server name                 (default: hostname -s)
+    --port=<port>                   MetricBase listener port               (default: 3400)
+    --mb_admin_user=<user>          Admin username                         (default: admin)
+    --mb_backup_user=<user>         Backup username                        (default: dbi_backup)
+    --heap_size=<GB>                Max JVM heap in GB                     (default: 8)
     --peer_host=<host>              HA peer hostname or IP (enables HA replication when set)
-    --peer_port=<port>              HA peer MetricBase port              (default: same as --port)
-    --replication_user=<user>       Replication account username        (default: repuser)
-    --replication_password=<pw>     Replication account password        (required if --peer_host set)
+    --peer_port=<port>              HA peer MetricBase port                (default: same as --port)
+    --replication_user=<user>       Replication account username           (default: repuser)
+    --replication_password=<pw>     Replication account password           (required if --peer_host set)
     --skip_deps                     Skip OS dependency installation
     --skip_selinux                  Skip SELinux port labeling
     --help                          Show this help
@@ -73,14 +71,13 @@ usage() {
   Prerequisites in --media_dir (default: /glide/media):
     - clotho-dist-<version>-dist.zip    MetricBase distribution zip
     - <jdk_tarball>                     JDK 17 tarball (e.g. jdk-17.0.x_linux-x64_bin.tar.gz)
-    - metricbase-backup.sh              Backup script (installed to ${INSTALL_DIR}/bin/)
+    - metricbase-backup.sh              Backup script (installed to <install_dir>/bin/)
 
   Notes:
     - Must be run as root
     - Target OS: RHEL 9 / Rocky Linux 9
-    - Node is installed to <install_dir>/<node_name>_<port>/
+    - MetricBase is installed directly under --install_dir (e.g. /glide/clotho/startup.sh)
     - For HA, run this script on both nodes pointing --peer_host at the other
-    - The replication user is created locally and used to connect to the peer
 
   Example (standalone):
     $0 --dist_zip=clotho-dist-25.1.0.15-dist.zip \\
@@ -150,14 +147,14 @@ parse_args() {
 }
 
 validate_args() {
-  [ -n "${DIST_ZIP}" ]          || die "--dist_zip is required."
-  [ -n "${JDK_TARBALL}" ]       || die "--jdk_tarball is required."
-  [ -n "${MB_ADMIN_PASSWORD}" ] || die "--mb_admin_password is required."
+  [ -n "${DIST_ZIP}" ]           || die "--dist_zip is required."
+  [ -n "${JDK_TARBALL}" ]        || die "--jdk_tarball is required."
+  [ -n "${MB_ADMIN_PASSWORD}" ]  || die "--mb_admin_password is required."
   [ -n "${MB_BACKUP_PASSWORD}" ] || die "--mb_backup_password is required."
 
-  [ -f "${MEDIA_DIR}/${DIST_ZIP}" ]            || die "Distribution zip not found: ${MEDIA_DIR}/${DIST_ZIP}"
-  [ -f "${MEDIA_DIR}/${JDK_TARBALL}" ]         || die "JDK tarball not found: ${MEDIA_DIR}/${JDK_TARBALL}"
-  [ -f "${MEDIA_DIR}/metricbase-backup.sh" ]   || die "metricbase-backup.sh not found: ${MEDIA_DIR}/metricbase-backup.sh"
+  [ -f "${MEDIA_DIR}/${DIST_ZIP}" ]          || die "Distribution zip not found: ${MEDIA_DIR}/${DIST_ZIP}"
+  [ -f "${MEDIA_DIR}/${JDK_TARBALL}" ]       || die "JDK tarball not found: ${MEDIA_DIR}/${JDK_TARBALL}"
+  [ -f "${MEDIA_DIR}/metricbase-backup.sh" ] || die "metricbase-backup.sh not found: ${MEDIA_DIR}/metricbase-backup.sh"
 
   if [ -n "${PEER_HOST}" ]; then
     [ -n "${REPLICATION_PASSWORD}" ] \
@@ -168,13 +165,11 @@ validate_args() {
   [ -z "${NODE_NAME}" ] && NODE_NAME="$(hostname -s)"
 
   # Extract version from zip filename: clotho-dist-<version>-dist.zip
-  MB_VERSION=$(echo "${DIST_ZIP}" | sed 's/clotho-dist-\(.*\)\.zip/\1/')
+  MB_VERSION=$(echo "${DIST_ZIP}" | sed 's/clotho-dist-\(.*\)-dist\.zip/\1/')
   [ "${MB_VERSION}" = "${DIST_ZIP}" ] \
-    && die "Cannot extract version from dist zip filename: ${DIST_ZIP}. Expected format: clotho-dist-<version>.zip"
+    && die "Cannot parse version from dist zip name: ${DIST_ZIP}. Expected: clotho-dist-<version>-dist.zip"
 
-  NODE_DIR="${INSTALL_DIR}/${NODE_NAME}_${PORT}"
-
-  log "Resolved: version=${MB_VERSION}, node_dir=${NODE_DIR}"
+  log "Resolved: version=${MB_VERSION}, install_dir=${INSTALL_DIR}"
 }
 
 # ── STEP 1: OS DEPENDENCIES ───────────────────────────────────────────────────
@@ -234,34 +229,29 @@ create_user_group() {
 
 # ── STEP 4: INSTALL METRICBASE ────────────────────────────────────────────────
 install_metricbase() {
-  if [ -f "${NODE_DIR}/startup.sh" ]; then
-    log "MetricBase node already installed at ${NODE_DIR}, skipping installation."
+  if [ -f "${INSTALL_DIR}/startup.sh" ]; then
+    log "MetricBase already installed at ${INSTALL_DIR}, skipping installation."
     return 0
   fi
 
   log "Installing MetricBase ${MB_VERSION} as node '${NODE_NAME}' on port ${PORT}..."
 
-  mkdir -p "${INSTALL_DIR}"
+  # KB instructs: cd to the install dir, then run java -jar from there
+  ( cd "${INSTALL_DIR}" && \
+    "${JAVA_DIR}/bin/java" -jar "${MEDIA_DIR}/${DIST_ZIP}" \
+      -m install \
+      -n "${NODE_NAME}" \
+      -p "${PORT}" )
 
-  "${JAVA_DIR}/bin/java" -jar "${MEDIA_DIR}/${DIST_ZIP}" \
-    -m install \
-    -n "${NODE_NAME}" \
-    -p "${PORT}" \
-    --dst-dir "${INSTALL_DIR}" 2>/dev/null \
-    || "${JAVA_DIR}/bin/java" -jar "${MEDIA_DIR}/${DIST_ZIP}" \
-         install \
-         -n "${NODE_NAME}" \
-         -p "${PORT}"
+  [ -f "${INSTALL_DIR}/startup.sh" ] \
+    || die "Installation failed: startup.sh not found at ${INSTALL_DIR}."
 
-  [ -f "${NODE_DIR}/startup.sh" ] \
-    || die "Installation failed: startup.sh not found at ${NODE_DIR}."
-
-  log "MetricBase installed at ${NODE_DIR}."
+  log "MetricBase installed at ${INSTALL_DIR}."
 }
 
 # ── STEP 5: FIX WRAPPER.CONF ──────────────────────────────────────────────────
 fix_wrapper_conf() {
-  local wrapper_conf="${NODE_DIR}/conf/wrapper.conf"
+  local wrapper_conf="${INSTALL_DIR}/conf/wrapper.conf"
 
   [ -f "${wrapper_conf}" ] || { log "wrapper.conf not found, skipping fix."; return 0; }
 
@@ -276,7 +266,7 @@ fix_wrapper_conf() {
 
 # ── STEP 6: CONFIGURE JVM HEAP ────────────────────────────────────────────────
 configure_heap() {
-  local overrides_dir="${NODE_DIR}/conf/overrides.d"
+  local overrides_dir="${INSTALL_DIR}/conf/overrides.d"
   local mem_props="${overrides_dir}/92-memory.properties"
 
   mkdir -p "${overrides_dir}"
@@ -296,8 +286,8 @@ EOF
 # ── STEP 7: CREATE METRICBASE USERS ───────────────────────────────────────────
 create_mb_user() {
   local username="$1" password="$2" roles="$3"
-  local passwd_file="${NODE_DIR}/conf/passwd"
-  local add_user_script="${NODE_DIR}/scripts/add_app_user.sh"
+  local passwd_file="${INSTALL_DIR}/conf/passwd"
+  local add_user_script="${INSTALL_DIR}/scripts/add_app_user.sh"
 
   [ -f "${add_user_script}" ] || die "add_app_user.sh not found: ${add_user_script}"
 
@@ -324,7 +314,7 @@ create_metricbase_users() {
 configure_ha() {
   [ -n "${PEER_HOST}" ] || return 0
 
-  local overrides_dir="${NODE_DIR}/conf/overrides.d"
+  local overrides_dir="${INSTALL_DIR}/conf/overrides.d"
   local repl_props="${overrides_dir}/97-replication.properties"
 
   mkdir -p "${overrides_dir}"
@@ -357,8 +347,8 @@ After=syslog.target network.target
 [Service]
 Environment=JAVA_HOME=${JAVA_DIR}
 Type=forking
-ExecStart=${NODE_DIR}/startup.sh
-ExecStop=${NODE_DIR}/shutdown.sh
+ExecStart=${INSTALL_DIR}/startup.sh
+ExecStop=${INSTALL_DIR}/shutdown.sh
 User=${CLOTHO_USER}
 Group=${CLOTHO_USER}
 UMask=0007
@@ -396,9 +386,9 @@ configure_selinux() {
   fi
 }
 
-# ── STEP 11: BACKUP SETUP ────────────────────────────────────────────────────
+# ── STEP 11: BACKUP SETUP ─────────────────────────────────────────────────────
 setup_backup() {
-  local password_file="${NODE_DIR}/conf/mb_backup_password.txt"
+  local password_file="${INSTALL_DIR}/conf/mb_backup_password.txt"
   local backup_script="${INSTALL_DIR}/bin/metricbase-backup.sh"
   local cron_file="/etc/cron.d/metricbase"
 
@@ -413,7 +403,7 @@ setup_backup() {
 
   mkdir -p "${FULL_BACKUP_DIR}" "${DIFF_BACKUP_DIR}"
 
-  # Derive the cron hour expression for differential interval (e.g. 6 → "0,6,12,18")
+  # Build cron hour list from interval (e.g. 6 → "0,6,12,18")
   local diff_hours=""
   local h=0
   while [ "${h}" -lt 24 ]; do
@@ -426,10 +416,10 @@ setup_backup() {
 MAILTO=""
 
 # Weekly full MetricBase backup — Sunday at 02:00
-0 2 * * 0 ${CLOTHO_USER} ${backup_script} --node_dir=${NODE_DIR} --port=${PORT} --password_file=${password_file} --type=full --full_backup_dir=${FULL_BACKUP_DIR} --diff_backup_dir=${DIFF_BACKUP_DIR} --log_dir=${INSTALL_DIR}/logs >> ${INSTALL_DIR}/logs/metricbase-backup.log 2>&1
+0 2 * * 0 ${CLOTHO_USER} ${backup_script} --node_dir=${INSTALL_DIR} --port=${PORT} --password_file=${password_file} --type=full --full_backup_dir=${FULL_BACKUP_DIR} --diff_backup_dir=${DIFF_BACKUP_DIR} --log_dir=${INSTALL_DIR}/logs >> ${INSTALL_DIR}/logs/metricbase-backup.log 2>&1
 
 # Differential MetricBase backup — every ${DIFF_INTERVAL} hours
-0 ${diff_hours} * * * ${CLOTHO_USER} ${backup_script} --node_dir=${NODE_DIR} --port=${PORT} --password_file=${password_file} --type=diff --full_backup_dir=${FULL_BACKUP_DIR} --diff_backup_dir=${DIFF_BACKUP_DIR} --log_dir=${INSTALL_DIR}/logs >> ${INSTALL_DIR}/logs/metricbase-backup.log 2>&1
+0 ${diff_hours} * * * ${CLOTHO_USER} ${backup_script} --node_dir=${INSTALL_DIR} --port=${PORT} --password_file=${password_file} --type=diff --full_backup_dir=${FULL_BACKUP_DIR} --diff_backup_dir=${DIFF_BACKUP_DIR} --log_dir=${INSTALL_DIR}/logs >> ${INSTALL_DIR}/logs/metricbase-backup.log 2>&1
 EOF
 
   chmod 644 "${cron_file}"
@@ -438,9 +428,9 @@ EOF
 
 # ── STEP 12: FILE OWNERSHIP ───────────────────────────────────────────────────
 set_ownership() {
-  log "Setting ownership of ${NODE_DIR} to ${CLOTHO_USER}:${CLOTHO_USER}..."
-  chown -R "${CLOTHO_USER}:${CLOTHO_USER}" "${NODE_DIR}"
-  chmod -R 750 "${NODE_DIR}"
+  log "Setting ownership of ${INSTALL_DIR} to ${CLOTHO_USER}:${CLOTHO_USER}..."
+  chown -R "${CLOTHO_USER}:${CLOTHO_USER}" "${INSTALL_DIR}"
+  chmod -R 750 "${INSTALL_DIR}"
   log "Ownership set."
 }
 
@@ -484,9 +474,9 @@ main() {
   log "MetricBase Deployment"
   log "  Host        : $(hostname -f)"
   log "  Version     : ${MB_VERSION}"
-  log "  Node        : ${NODE_NAME}"
+  log "  Node name   : ${NODE_NAME}"
   log "  Port        : ${PORT}"
-  log "  Node dir    : ${NODE_DIR}"
+  log "  Install dir : ${INSTALL_DIR}"
   log "  JDK         : ${JDK_TARBALL}"
   log "  Heap        : ${HEAP_SIZE}G"
   if [ -n "${PEER_HOST}" ]; then
@@ -515,12 +505,12 @@ main() {
 
   log "============================================================"
   log "Deployment complete on $(hostname -f)"
-  log "  MetricBase URL  : http://$(hostname -f):${PORT}/"
-  log "  Admin info      : http://$(hostname -f):${PORT}/admin/info"
-  log "  Service         : systemctl status metricbase"
-  log "  Logs            : ${NODE_DIR}/logs/"
+  log "  MetricBase URL : http://$(hostname -f):${PORT}/"
+  log "  Admin info     : http://$(hostname -f):${PORT}/admin/info"
+  log "  Service        : systemctl status metricbase"
+  log "  Logs           : ${INSTALL_DIR}/logs/"
   if [ -n "${PEER_HOST}" ]; then
-    log "  HA status       : http://$(hostname -f):${PORT}/replication"
+    log "  HA status      : http://$(hostname -f):${PORT}/replication"
   fi
   log ""
   log "  Next steps:"
@@ -528,7 +518,7 @@ main() {
   log "       MetricBase → MetricBase Configuration → New"
   log "    2. Test connection using the 'Test Connection' link"
   if [ -n "${PEER_HOST}" ]; then
-    log "    3. Verify HA replication status at /replication (status should be 'streaming')"
+    log "    3. Verify HA replication at /replication (status should be 'streaming')"
   fi
   log "============================================================"
 }
