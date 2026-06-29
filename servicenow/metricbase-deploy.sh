@@ -32,6 +32,11 @@ PEER_HOST=""
 PEER_PORT=""
 REPLICATION_USER="repuser"
 REPLICATION_PASSWORD=""
+ENABLE_HAPROXY="false"
+CERT_FILE=""
+KEY_FILE=""
+HAPROXY_BIND_PORT="443"
+HAPROXY_STAT_PORT="8000"
 SKIP_DEPS="false"
 SKIP_SELINUX="false"
 
@@ -66,34 +71,50 @@ usage() {
     --peer_port=<port>              HA peer MetricBase port                (default: same as --port)
     --replication_user=<user>       Replication account username           (default: repuser)
     --replication_password=<pw>     Replication account password           (required if --peer_host set)
+    --enable_haproxy                 Install and configure HAProxy TLSv1.3 frontend
+    --cert_file=<file>              TLS certificate filename (PEM) in media_dir (required if --enable_haproxy)
+    --key_file=<file>               TLS private key filename (PEM) in media_dir  (required if --enable_haproxy)
+    --haproxy_bind_port=<port>      HAProxy HTTPS frontend port                  (default: 443)
+    --haproxy_stat_port=<port>      HAProxy stats page port (loopback)           (default: 8000)
     --skip_deps                     Skip OS dependency installation
     --skip_selinux                  Skip SELinux port labeling
     --help                          Show this help
 
   Prerequisites in --media_dir (default: /glide/media):
-    - clotho-dist-<version>.zip    MetricBase distribution zip
+    - clotho-dist-<version>.zip         MetricBase distribution zip
     - <jdk_tarball>                     JDK 17 tarball (e.g. jdk-17.0.x_linux-x64_bin.tar.gz)
-    - metricbase-backup.sh              Backup script (installed to <install_dir>/bin/)
+    - metricbase-backup.sh              Backup script (installed to <node_dir>/bin/)
+    - <cert_file> + <key_file>          TLS cert/key PEM files (required if --enable_haproxy)
 
   Notes:
     - Must be run as root
     - Target OS: RHEL 9 / Rocky Linux 9
     - Node directory: <install_dir>/<node_name>_<port>/ (e.g. /glide/clotho/mydb_3400/)
     - For HA, run this script on both nodes pointing --peer_host at the other
+    - HAProxy terminates TLS on :443; MetricBase runs plain HTTP on localhost:<port>
 
-  Example (standalone):
+  Example (standalone, no TLS):
     $0 --dist_zip=clotho-dist-25.1.0.15.zip \\
        --jdk_tarball=jdk-17.0.11_linux-x64_bin.tar.gz \\
        --mb_admin_password=S3cur3Admin! \\
        --mb_backup_password=BackupP4ss!
 
-  Example (HA node A, peer is node-b):
+  Example (with HAProxy TLS frontend):
     $0 --dist_zip=clotho-dist-25.1.0.15.zip \\
        --jdk_tarball=jdk-17.0.11_linux-x64_bin.tar.gz \\
        --mb_admin_password=S3cur3Admin! \\
        --mb_backup_password=BackupP4ss! \\
-       --peer_host=node-b \\
-       --replication_password=ReplP4ss!
+       --enable_haproxy \\
+       --cert_file=metricbase.crt --key_file=metricbase.key
+
+  Example (HA node A, peer is node-b, with HAProxy):
+    $0 --dist_zip=clotho-dist-25.1.0.15.zip \\
+       --jdk_tarball=jdk-17.0.11_linux-x64_bin.tar.gz \\
+       --mb_admin_password=S3cur3Admin! \\
+       --mb_backup_password=BackupP4ss! \\
+       --peer_host=node-b --replication_password=ReplP4ss! \\
+       --enable_haproxy \\
+       --cert_file=metricbase.crt --key_file=metricbase.key
 
 EOUSAGE
 }
@@ -139,6 +160,11 @@ parse_args() {
       --peer_port=*)             PEER_PORT="${1#*=}" ;;
       --replication_user=*)      REPLICATION_USER="${1#*=}" ;;
       --replication_password=*)  REPLICATION_PASSWORD="${1#*=}" ;;
+      --enable_haproxy)          ENABLE_HAPROXY="true" ;;
+      --cert_file=*)             CERT_FILE="${1#*=}" ;;
+      --key_file=*)              KEY_FILE="${1#*=}" ;;
+      --haproxy_bind_port=*)     HAPROXY_BIND_PORT="${1#*=}" ;;
+      --haproxy_stat_port=*)     HAPROXY_STAT_PORT="${1#*=}" ;;
       --skip_deps)               SKIP_DEPS="true" ;;
       --skip_selinux)            SKIP_SELINUX="true" ;;
       --help)                    usage; exit 0 ;;
@@ -173,6 +199,13 @@ validate_args() {
 
   NODE_DIR="${INSTALL_DIR}/${NODE_NAME}_${PORT}"
 
+  if [ "${ENABLE_HAPROXY}" = "true" ]; then
+    [ -n "${CERT_FILE}" ] || die "--cert_file is required when --enable_haproxy is set."
+    [ -n "${KEY_FILE}" ]  || die "--key_file is required when --enable_haproxy is set."
+    [ -f "${MEDIA_DIR}/${CERT_FILE}" ] || die "Certificate file not found: ${MEDIA_DIR}/${CERT_FILE}"
+    [ -f "${MEDIA_DIR}/${KEY_FILE}" ]  || die "Key file not found: ${MEDIA_DIR}/${KEY_FILE}"
+  fi
+
   log "Resolved: version=${MB_VERSION}, node_dir=${NODE_DIR}"
 }
 
@@ -185,6 +218,7 @@ install_deps() {
 
   log "Installing OS dependencies..."
   dnf install -y curl glibc glibc.i686 libgcc
+  [ "${ENABLE_HAPROXY}" = "true" ] && dnf install -y haproxy
   log "OS dependencies installed."
 }
 
@@ -383,13 +417,20 @@ configure_selinux() {
 
   log "SELinux enforcing — labeling TCP/${PORT} as http_port_t..."
 
-  if semanage port -l | grep -E "^http_port_t\s" | grep -qw "${PORT}"; then
-    log "  TCP/${PORT} already labeled."
-  else
-    semanage port -a -t http_port_t -p tcp "${PORT}" \
-      || semanage port -m -t http_port_t -p tcp "${PORT}"
-    log "  Labeled TCP/${PORT} as http_port_t."
-  fi
+  label_port() {
+    local p=$1 desc=$2
+    if semanage port -l | grep -E "^http_port_t\s" | grep -qw "${p}"; then
+      log "  TCP/${p} (${desc}) already labeled."
+    else
+      semanage port -a -t http_port_t -p tcp "${p}" \
+        || semanage port -m -t http_port_t -p tcp "${p}"
+      log "  Labeled TCP/${p} as http_port_t (${desc})."
+    fi
+  }
+
+  label_port "${PORT}" "MetricBase"
+  [ "${ENABLE_HAPROXY}" = "true" ] && [ "${HAPROXY_BIND_PORT}" != "443" ] \
+    && label_port "${HAPROXY_BIND_PORT}" "HAProxy HTTPS"
 }
 
 # ── STEP 11: BACKUP SETUP ─────────────────────────────────────────────────────
@@ -470,6 +511,178 @@ verify_service() {
   log "MetricBase is up on 127.0.0.1:${PORT}."
 }
 
+# ── STEP 15: HAPROXY (OPTIONAL) ───────────────────────────────────────────────
+setup_haproxy_cert() {
+  local cfg_dir="/etc/haproxy"
+  log "Building combined PEM for HAProxy..."
+  cat "${MEDIA_DIR}/${CERT_FILE}" "${MEDIA_DIR}/${KEY_FILE}" > "${cfg_dir}/metricbase-server.pem"
+  chmod 600 "${cfg_dir}/metricbase-server.pem"
+  log "Combined PEM written to ${cfg_dir}/metricbase-server.pem."
+}
+
+configure_haproxy() {
+  local cfg_file="/etc/haproxy/haproxy.cfg"
+  local ncpus; ncpus=$(nproc)
+  local nbthread=$(( ncpus > 1 ? ncpus / 2 : 1 ))
+
+  log "Configuring HAProxy (TLSv1.3 :${HAPROXY_BIND_PORT} → 127.0.0.1:${PORT})..."
+
+  setup_haproxy_cert
+
+  if [ -f "${cfg_file}" ]; then
+    cp "${cfg_file}" "${cfg_file}.bak.$(date '+%Y%m%d%H%M%S')"
+    log "Existing HAProxy config backed up."
+  fi
+
+  cat > "${cfg_file}" <<EOF
+global
+  nbthread              ${nbthread}
+  cpu-map               auto:1/1-${nbthread} 0-$(( nbthread - 1 ))
+  maxconn               50000
+  log                   127.0.0.1 local2
+  chroot                /var/lib/haproxy
+  user                  haproxy
+  group                 haproxy
+  daemon
+  tune.ssl.cachesize    100000
+  tune.maxrewrite       4096
+  stats                 socket /var/lib/haproxy/stats
+
+  # Hardening: TLSv1.3 only, ECDHE ciphersuites
+  ssl-default-bind-curves         secp384r1:secp521r1:prime256v1
+  ssl-default-bind-options        ssl-min-ver TLSv1.3
+  ssl-default-bind-ciphersuites   TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256
+  ssl-default-server-options      ssl-min-ver TLSv1.3
+  ssl-default-server-ciphersuites TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256
+
+defaults
+  mode                  http
+  log                   global
+  option                dontlognull
+  option                http-server-close
+  option                redispatch
+  retries               3
+  timeout http-request  30s
+  timeout queue         1m
+  timeout connect       5s
+  timeout client        60s
+  timeout server        300s
+  timeout http-keep-alive 120s
+  timeout check         10s
+  timeout tunnel        10m
+  timeout client-fin    10s
+  timeout server-fin    10s
+
+frontend stats
+  bind                  127.0.0.1:${HAPROXY_STAT_PORT}
+  mode                  http
+  stats                 enable
+  stats                 hide-version
+  stats                 realm HAProxy\ Statistics
+  stats                 show-node
+  stats                 uri /stats
+  stats                 refresh 30s
+
+frontend metricbase-frontend
+  bind                  0.0.0.0:${HAPROXY_BIND_PORT} ssl crt /etc/haproxy/metricbase-server.pem
+  option                httplog
+  option                forwardfor
+
+  unique-id-format %[uuid()]
+  unique-id-header X-Unique-ID
+  log-tag metricbase
+  log-format {\"timestamp\":\"%tr\",\"application\":\"metricbase\",\"client_ip\":\"%ci\",\"fe_name\":\"%f\",\"fe_ip\":\"%fi\",\"fe_port\":\"%fp\",\"fe_conn\":\"%fc\",\"be_name\":\"%b\",\"server_name\":\"%s\",\"server_ip\":\"%si\",\"server_port\":\"%sp\",\"srv_conn\":\"%sc\",\"http_method\":\"%HM\",\"http_proto\":\"https\",\"host\":\"%hrl\",\"http_uri\":\"%HU\",\"status_code\":\"%ST\",\"response_time\":\"%Tr\",\"bytes_read\":\"%B\",\"termination_state\":\"%ts\",\"active_conn\":\"%ac\",\"x-unique-id\":\"%ID\"}
+
+  # LB health check endpoint answered directly by HAProxy
+  acl is_be_healthy   path /hello
+  acl backends_down   nbsrv(metricbase-backend) lt 1
+  http-request return status 503 content-type "text/plain" string "down" if is_be_healthy backends_down
+  http-request return status 200 content-type "text/plain" string "ok"   if is_be_healthy
+
+  http-request          set-header X-Forwarded-Host  %[req.hdr(host)]
+  http-request          set-header X-Forwarded-Proto https if { ssl_fc }
+  http-request          set-header X-Forwarded-Proto http  if !{ ssl_fc }
+
+  http-after-response   set-header Strict-Transport-Security "max-age=63072000; includeSubDomains;"
+  http-after-response   replace-header Set-Cookie '(^((?!(?i)httponly).)*$)' "\1; HttpOnly"
+  http-after-response   replace-header Set-Cookie '(^((?!(?i)secure).)*$)'   "\1; Secure"
+  http-response         replace-header Location ^http://(.*)$ https://\1
+
+  default_backend       metricbase-backend
+
+backend metricbase-backend
+  mode                  http
+  balance               leastconn
+  cookie                MBSERVERID insert indirect nocache httponly secure
+  option                httpchk GET /
+  server                metricbase1 127.0.0.1:${PORT} check cookie metricbase1
+
+EOF
+
+  log "Validating HAProxy configuration..."
+  haproxy -c -f "${cfg_file}" || {
+    local backup; backup=$(ls -t "${cfg_file}.bak."* 2>/dev/null | head -1 || true)
+    [ -n "${backup}" ] && cp "${backup}" "${cfg_file}" && log "Config rolled back to ${backup}."
+    die "HAProxy config invalid. Fix errors and re-run."
+  }
+
+  configure_rsyslog_haproxy
+  configure_logrotate_haproxy
+
+  systemctl restart rsyslog
+  systemctl enable  haproxy
+  systemctl restart haproxy
+
+  log "HAProxy configured and started."
+}
+
+configure_rsyslog_haproxy() {
+  cat > /etc/rsyslog.d/30-haproxy.conf <<'RSYSLOG'
+module(load="imudp")
+input(type="imudp" port="514")
+
+$template HAProxyFmt,"%syslogtag%%msg:::drop-last-lf%\n"
+$template TraditionalFmt,"%pri-text%: %timegenerated% %syslogtag%%msg:::drop-last-lf%\n"
+
+local2.=info     /var/log/haproxy/access.log;HAProxyFmt
+local2.notice    /var/log/haproxy/status.log;TraditionalFmt
+local2.error     /var/log/haproxy/error.log;TraditionalFmt
+local2.*         stop
+RSYSLOG
+
+  mkdir -p /var/log/haproxy
+}
+
+configure_logrotate_haproxy() {
+  cat > /etc/logrotate.d/haproxy-metricbase <<'LOGROTATE'
+/var/log/haproxy/*.log {
+  daily
+  rotate 30
+  missingok
+  notifempty
+  compress
+  sharedscripts
+  postrotate
+    /bin/kill -HUP $(cat /var/run/rsyslogd.pid 2>/dev/null) 2>/dev/null || true
+  endscript
+}
+LOGROTATE
+}
+
+verify_haproxy() {
+  log "Verifying HAProxy stats endpoint..."
+  local attempt=0 max=6
+
+  until curl -sf "http://127.0.0.1:${HAPROXY_STAT_PORT}/stats" >/dev/null 2>&1; do
+    attempt=$(( attempt + 1 ))
+    [ "${attempt}" -ge "${max}" ] \
+      && die "HAProxy stats not reachable after $(( max * 5 ))s. Check: journalctl -u haproxy"
+    sleep 5
+  done
+
+  log "HAProxy stats reachable at http://127.0.0.1:${HAPROXY_STAT_PORT}/stats"
+}
+
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 main() {
   parse_args "$@"
@@ -492,6 +705,9 @@ main() {
   fi
   log "  Full backup : ${FULL_BACKUP_DIR} (weekly Sunday 02:00)"
   log "  Diff backup : ${DIFF_BACKUP_DIR} (every ${DIFF_INTERVAL}h)"
+  if [ "${ENABLE_HAPROXY}" = "true" ]; then
+    log "  HAProxy TLS : enabled (bind :${HAPROXY_BIND_PORT} → 127.0.0.1:${PORT})"
+  fi
   log "============================================================"
 
   [ "${SKIP_DEPS}" = "true" ] && log "Skipping OS dependency installation (--skip_deps)." || install_deps
@@ -509,9 +725,19 @@ main() {
   enable_start_service
   verify_service
 
+  if [ "${ENABLE_HAPROXY}" = "true" ]; then
+    configure_haproxy
+    verify_haproxy
+  fi
+
   log "============================================================"
   log "Deployment complete on $(hostname -f)"
-  log "  MetricBase URL : http://$(hostname -f):${PORT}/"
+  if [ "${ENABLE_HAPROXY}" = "true" ]; then
+    log "  MetricBase URL : https://$(hostname -f):${HAPROXY_BIND_PORT}/"
+    log "  HAProxy stats  : http://127.0.0.1:${HAPROXY_STAT_PORT}/stats"
+  else
+    log "  MetricBase URL : http://$(hostname -f):${PORT}/"
+  fi
   log "  Admin info     : http://$(hostname -f):${PORT}/admin/info"
   log "  Service        : systemctl status metricbase"
   log "  Logs           : ${NODE_DIR}/logs/"

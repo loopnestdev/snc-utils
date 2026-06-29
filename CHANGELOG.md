@@ -639,3 +639,17 @@ All notable changes to this project will be documented in this file.
   vendor-managed service file. `AmbientCapabilities=CAP_NET_BIND_SERVICE` is
   included in the drop-in when the port is privileged (< 1024) so the
   `parexport` non-root user can bind to port 443 without running as root.
+
+## [v0.2.1] — 2026-06-30
+
+### Added
+
+#### ServiceNow (`servicenow/`)
+
+- `metricbase-deploy.sh` — optional HAProxy TLS frontend (`--enable_haproxy`,
+  `--cert_file`, `--key_file`, `--haproxy_bind_port`, `--haproxy_stat_port`).
+  When enabled, HAProxy is installed and configured with TLSv1.3-only termination,
+  a JSON log format, a built-in `/hello` health-check ACL, and a backend pointing
+  to `127.0.0.1:<port>`. rsyslog (`30-haproxy.conf`) and logrotate
+  (`haproxy-metricbase`) are configured automatically. The deployment summary
+  reports the `https://` URL when HAProxy is active.
