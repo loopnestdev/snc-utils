@@ -695,3 +695,14 @@ All notable changes to this project will be documented in this file.
     `cmp -s`. `_PAR_SVC_CHANGED` is set only when files actually change.
   - `enable_parexport`: restarts the service only when `_PAR_SVC_CHANGED` is true
     or the service is not already active.
+
+## [v0.2.4] — 2026-06-30
+
+### Fixed
+
+#### Utilities (`utilities/`)
+
+- `ca-custom.sh` — fixed serial number increment failing with `value too great for base`
+  when the OpenSSL `serial` file contains a hex value (e.g. `100A`). Bash arithmetic
+  `$(( ))` only handles decimal; replaced with `printf '%X\n' $(( 16#${serial} + 1 ))`
+  to correctly parse and write the serial back as uppercase hex.

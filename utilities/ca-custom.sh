@@ -327,7 +327,7 @@ else
   echo "$(ts) Server certificate does not exist, signing CSR..."
   # Increment serial number to avoid conflicts
   current_serial=$(cat "${BASE_DIR}/serial")
-  echo $((current_serial + 1)) > "${BASE_DIR}/serial"
+  printf '%X\n' $(( 16#${current_serial} + 1 )) > "${BASE_DIR}/serial"
   openssl ca \
     -config "${OPENSSL_CA_CONF}" \
     -extensions v3_server \
