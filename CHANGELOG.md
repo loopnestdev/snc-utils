@@ -449,7 +449,7 @@ All notable changes to this project will be documented in this file.
 - `snow-deploy.sh` — `--haproxy_statport` default changed from `14567` to `8000`
 - `snap-deploy.sh` — `--haproxy_stat_port` default changed from `9998` to `8000`
 
-## [v0.1.24] — 2026-06-30
+## [v0.2.5] — 2026-06-30
 
 ### Added
 
