@@ -550,8 +550,8 @@ setup_backup() {
     h=$(( h + DIFF_INTERVAL ))
   done
 
-  log "Configuring backup crons (full: weekly Sunday 02:00 | diff: every ${DIFF_INTERVAL}h)..."
-  cat > "${cron_file}" <<EOF
+  local cron_tmp; cron_tmp=$(mktemp)
+  cat > "${cron_tmp}" <<EOF
 MAILTO=""
 
 # Weekly full MetricBase backup — Sunday at 02:00
@@ -561,8 +561,15 @@ MAILTO=""
 0 ${diff_hours} * * * ${CLOTHO_USER} ${backup_script} --node_dir=${NODE_DIR} --port=${PORT} --password_file=${password_file} --type=diff --full_backup_dir=${FULL_BACKUP_DIR} --diff_backup_dir=${DIFF_BACKUP_DIR} --log_dir=${NODE_DIR}/logs >> ${NODE_DIR}/logs/metricbase-backup.log 2>&1
 EOF
 
-  chmod 644 "${cron_file}"
-  log "Backup crons configured: ${cron_file}"
+  if [ -f "${cron_file}" ] && diff -q "${cron_file}" "${cron_tmp}" >/dev/null 2>&1; then
+    log "Backup crons unchanged, skipping."
+    rm -f "${cron_tmp}"
+  else
+    log "Configuring backup crons (full: weekly Sunday 02:00 | diff: every ${DIFF_INTERVAL}h)..."
+    mv "${cron_tmp}" "${cron_file}"
+    chmod 644 "${cron_file}"
+    log "Backup crons configured: ${cron_file}"
+  fi
 }
 
 # ── STEP 13: FILE OWNERSHIP ───────────────────────────────────────────────────

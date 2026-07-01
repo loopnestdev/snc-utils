@@ -753,3 +753,13 @@ All notable changes to this project will be documented in this file.
     `--ssl_port`); plain HTTP replication removed.
   - `configure_selinux()` now labels both the HTTP port and the SSL port.
   - All HAProxy functions, parameters, and dependencies removed.
+
+## [v0.3.1] — 2026-07-01
+
+### Fixed
+
+#### ServiceNow (`servicenow/`)
+
+- `metricbase-deploy.sh` — `setup_backup`: cron file is now written to a temp
+  file and diff-checked against the existing `/etc/cron.d/metricbase`; only
+  replaced when content differs, making re-runs fully idempotent.
