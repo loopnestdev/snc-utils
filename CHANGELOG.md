@@ -763,3 +763,29 @@ All notable changes to this project will be documented in this file.
 - `metricbase-deploy.sh` — `setup_backup`: cron file is now written to a temp
   file and diff-checked against the existing `/etc/cron.d/metricbase`; only
   replaced when content differs, making re-runs fully idempotent.
+
+## [v0.3.2] — 2026-07-01
+
+### Changed
+
+#### ServiceNow (`servicenow/`)
+
+- `metricbase-deploy.sh` — improved SSL keystore handling and truststore
+  configuration:
+  - Renamed `cacerts.bcfks` → `server.bcfks` (server certificate keystore)
+  - New `cacerts.bcfks` is the truststore: JDK CA bundle converted to BCFKS,
+    with optional custom CA imported via new `--ca_cert_file` parameter
+  - New `--truststore_pass` parameter (default: `changeit`) for the truststore
+    password
+  - `setup_ssl()` split into `setup_keystore()`, `setup_truststore()`, and
+    `setup_https_properties()` for clarity and independent idempotency guards
+  - `02-https.properties` updated: `keystoreFile` → `server.bcfks`,
+    `keystoreAlias=metricbase`, and truststore connector properties added
+    (`truststoreFile`, `truststoreType`, `truststorePass`)
+  - Systemd unit now sets `JAVA_TOOL_OPTIONS` with all six `javax.net.ssl.*`
+    system properties (absolute paths) so outbound connections (replication)
+    use the correct BCFKS keystores; survives MetricBase upgrades as wrapper
+    configs are auto-generated and not user-editable
+  - `setup_https_properties()` removes `03-truststore.properties` if present
+    from prior manual testing
+  - `set_ownership()` explicitly sets mode 640 on both keystore files

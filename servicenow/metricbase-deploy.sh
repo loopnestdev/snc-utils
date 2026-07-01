@@ -3,7 +3,9 @@
 #
 # The installer creates <install_dir>/<node_name>_<port>/ (e.g. /glide/clotho/mydb_3400/).
 # All MetricBase files (startup.sh, conf/, data/, logs/) live under that node directory.
-# TLS is terminated natively by MetricBase using a BCFKS keystore (BouncyCastle FIPS).
+# TLS is terminated natively by MetricBase using BCFKS keystores (BouncyCastle FIPS):
+#   - server.bcfks   — server certificate and private key
+#   - cacerts.bcfks  — truststore (JDK CA bundle + optional custom CA)
 # Optionally configures HA replication with a peer node over HTTPS, creates initial
 # admin and backup users, and schedules backup cron jobs:
 #   - Weekly full backup  (Sunday 02:00)
@@ -32,7 +34,9 @@ MB_BACKUP_PASSWORD=""
 HEAP_SIZE="8"
 CERT_FILE=""
 KEY_FILE=""
+CA_CERT_FILE=""
 KEYSTORE_PASS=""
+TRUSTSTORE_PASS="changeit"
 PEER_HOST=""
 PEER_PORT=""
 REPLICATION_USER="repuser"
@@ -56,9 +60,9 @@ usage() {
     --jdk_tarball=<file>            JDK 17 tarball filename in media_dir
     --mb_admin_password=<password>  Initial MetricBase admin user password
     --mb_backup_password=<password> MetricBase backup user password
-    --cert_file=<file>              TLS certificate filename (PEM) in media_dir
-    --key_file=<file>               TLS private key filename (PEM) in media_dir
-    --keystore_pass=<password>      Password for the BCFKS keystore
+    --cert_file=<file>              Server TLS certificate filename (PEM) in media_dir
+    --key_file=<file>               Server TLS private key filename (PEM) in media_dir
+    --keystore_pass=<password>      Password for the server keystore (server.bcfks)
 
   Optional:
     --install_dir=<path>            MetricBase install directory           (default: /glide/clotho)
@@ -72,6 +76,8 @@ usage() {
     --mb_admin_user=<user>          Admin username                         (default: admin)
     --mb_backup_user=<user>         Backup username                        (default: dbi_backup)
     --heap_size=<GB>                Max JVM heap in GB                     (default: 8)
+    --ca_cert_file=<file>           Custom CA certificate (PEM) in media_dir to add to truststore
+    --truststore_pass=<password>    Password for the truststore (cacerts.bcfks) (default: changeit)
     --peer_host=<host>              HA peer hostname or IP (enables HA replication when set)
     --peer_port=<port>              HA peer HTTPS port                     (default: same as --ssl_port)
     --replication_user=<user>       Replication account username           (default: repuser)
@@ -84,14 +90,19 @@ usage() {
     - clotho-dist-<version>.zip     MetricBase distribution zip
     - <jdk_tarball>                 JDK 17 tarball (e.g. jdk-17.0.x_linux-x64_bin.tar.gz)
     - metricbase-backup.sh          Backup script (installed to <node_dir>/bin/)
-    - <cert_file>                   TLS certificate PEM
-    - <key_file>                    TLS private key PEM
+    - <cert_file>                   Server TLS certificate PEM
+    - <key_file>                    Server TLS private key PEM
+    - <ca_cert_file>                Custom CA certificate PEM (optional)
+
+  Keystores created under <node_dir>/conf/overrides.d/:
+    - server.bcfks   — server certificate and private key (TLS server identity)
+    - cacerts.bcfks  — truststore: JDK CA bundle + optional custom CA (outbound trust)
 
   Notes:
     - Must be run as root
     - Target OS: RHEL 9 / Rocky Linux 9
     - Node directory: <install_dir>/<node_name>_<port>/ (e.g. /glide/clotho/mydb_3400/)
-    - MetricBase serves HTTPS natively on --ssl_port via a BCFKS keystore
+    - MetricBase serves HTTPS natively on --ssl_port via BouncyCastle FIPS JSSE
     - The plain HTTP connector on --port remains active for local health checks and backup
     - For HA, run this script on both nodes pointing --peer_host at the other
     - HA replication connects peer-to-peer over HTTPS on --peer_port
@@ -104,13 +115,14 @@ usage() {
        --cert_file=metricbase.crt --key_file=metricbase.key \\
        --keystore_pass=KsP4ss!
 
-  Example (HA node A, peer is node-b):
+  Example (with custom CA, HA node A, peer is node-b):
     $0 --dist_zip=clotho-dist-25.1.0.15.zip \\
        --jdk_tarball=jdk-17.0.11_linux-x64_bin.tar.gz \\
        --mb_admin_password=S3cur3Admin! \\
        --mb_backup_password=BackupP4ss! \\
        --cert_file=metricbase.crt --key_file=metricbase.key \\
        --keystore_pass=KsP4ss! \\
+       --ca_cert_file=internal-ca.crt \\
        --peer_host=node-b --replication_password=ReplP4ss!
 
 EOUSAGE
@@ -156,7 +168,9 @@ parse_args() {
       --heap_size=*)             HEAP_SIZE="${1#*=}" ;;
       --cert_file=*)             CERT_FILE="${1#*=}" ;;
       --key_file=*)              KEY_FILE="${1#*=}" ;;
+      --ca_cert_file=*)          CA_CERT_FILE="${1#*=}" ;;
       --keystore_pass=*)         KEYSTORE_PASS="${1#*=}" ;;
+      --truststore_pass=*)       TRUSTSTORE_PASS="${1#*=}" ;;
       --peer_host=*)             PEER_HOST="${1#*=}" ;;
       --peer_port=*)             PEER_PORT="${1#*=}" ;;
       --replication_user=*)      REPLICATION_USER="${1#*=}" ;;
@@ -184,6 +198,10 @@ validate_args() {
   [ -f "${MEDIA_DIR}/metricbase-backup.sh" ] || die "metricbase-backup.sh not found: ${MEDIA_DIR}/metricbase-backup.sh"
   [ -f "${MEDIA_DIR}/${CERT_FILE}" ]         || die "Certificate file not found: ${MEDIA_DIR}/${CERT_FILE}"
   [ -f "${MEDIA_DIR}/${KEY_FILE}" ]          || die "Key file not found: ${MEDIA_DIR}/${KEY_FILE}"
+
+  if [ -n "${CA_CERT_FILE}" ]; then
+    [ -f "${MEDIA_DIR}/${CA_CERT_FILE}" ] || die "CA certificate file not found: ${MEDIA_DIR}/${CA_CERT_FILE}"
+  fi
 
   if [ -n "${PEER_HOST}" ]; then
     [ -n "${REPLICATION_PASSWORD}" ] \
@@ -323,53 +341,105 @@ EOF
 }
 
 # ── STEP 7: CONFIGURE HTTPS ───────────────────────────────────────────────────
-setup_ssl() {
+setup_keystore() {
   local overrides_dir="${NODE_DIR}/conf/overrides.d"
-  local keystore="${overrides_dir}/cacerts.bcfks"
-  local https_props="${overrides_dir}/02-https.properties"
+  local keystore="${overrides_dir}/server.bcfks"
   local p12_tmp; p12_tmp=$(mktemp --suffix=.p12)
 
-  mkdir -p "${overrides_dir}"
-
   if [ -f "${keystore}" ]; then
-    log "BCFKS keystore already exists, skipping SSL setup."
+    log "Server keystore already exists (server.bcfks), skipping."
     return 0
   fi
 
-  log "Setting up native HTTPS on port ${SSL_PORT}..."
-
-  # Locate BouncyCastle FIPS provider jar (installed by MetricBase under node dir)
+  # Locate BouncyCastle FIPS provider jar installed by MetricBase
   local bcfips_jar
   bcfips_jar=$(find "${NODE_DIR}/lib/jsw" -name "bc-fips-*.jar" 2>/dev/null | sort -V | tail -1)
   [ -n "${bcfips_jar}" ] || die "bc-fips-*.jar not found under ${NODE_DIR}/lib/jsw/"
 
-  log "  Using BouncyCastle provider: ${bcfips_jar##*/}"
+  log "Building server keystore (server.bcfks)..."
+  log "  BouncyCastle provider: ${bcfips_jar##*/}"
 
   # Convert PEM cert + key → PKCS12
-  log "  Converting PEM to PKCS12..."
   openssl pkcs12 -export \
-    -in  "${MEDIA_DIR}/${CERT_FILE}" \
+    -in    "${MEDIA_DIR}/${CERT_FILE}" \
     -inkey "${MEDIA_DIR}/${KEY_FILE}" \
-    -out "${p12_tmp}" \
-    -name metricbase \
+    -out   "${p12_tmp}" \
+    -name  metricbase \
     -passout "pass:${KEYSTORE_PASS}"
 
-  # Convert PKCS12 → BCFKS using BouncyCastle FIPS provider
-  log "  Converting PKCS12 to BCFKS keystore..."
+  # Convert PKCS12 → BCFKS
   "${JAVA_DIR}/bin/keytool" -importkeystore \
-    -srckeystore  "${p12_tmp}"      -srcstoretype  PKCS12 \
-    -srcstorepass "${KEYSTORE_PASS}" -srcalias      metricbase \
-    -destkeystore "${keystore}"     -deststoretype BCFKS \
-    -deststorepass "${KEYSTORE_PASS}" -destalias    metricbase \
+    -srckeystore   "${p12_tmp}"       -srcstoretype   PKCS12 \
+    -srcstorepass  "${KEYSTORE_PASS}" -srcalias       metricbase \
+    -destkeystore  "${keystore}"      -deststoretype  BCFKS \
+    -deststorepass "${KEYSTORE_PASS}" -destalias      metricbase \
     -provider org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider \
     -providerpath "${bcfips_jar}" \
     -noprompt
 
   rm -f "${p12_tmp}"
   chmod 640 "${keystore}"
-  log "  Keystore written: ${keystore}"
+  log "  Server keystore written: ${keystore}"
+}
 
-  # Write HTTPS connector properties
+setup_truststore() {
+  local overrides_dir="${NODE_DIR}/conf/overrides.d"
+  local truststore="${overrides_dir}/cacerts.bcfks"
+
+  if [ -f "${truststore}" ]; then
+    log "Truststore already exists (cacerts.bcfks), skipping."
+    return 0
+  fi
+
+  # Locate BouncyCastle FIPS provider jar
+  local bcfips_jar
+  bcfips_jar=$(find "${NODE_DIR}/lib/jsw" -name "bc-fips-*.jar" 2>/dev/null | sort -V | tail -1)
+  [ -n "${bcfips_jar}" ] || die "bc-fips-*.jar not found under ${NODE_DIR}/lib/jsw/"
+
+  log "Building truststore (cacerts.bcfks) from JDK CA bundle..."
+
+  # Convert JDK cacerts (JKS) → BCFKS
+  "${JAVA_DIR}/bin/keytool" -importkeystore \
+    -srckeystore  "${JAVA_DIR}/lib/security/cacerts" -srcstoretype  JKS \
+    -srcstorepass "changeit" \
+    -destkeystore "${truststore}"  -deststoretype BCFKS \
+    -deststorepass "${TRUSTSTORE_PASS}" \
+    -provider org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider \
+    -providerpath "${bcfips_jar}" \
+    -noprompt
+
+  # Optionally import custom CA certificate
+  if [ -n "${CA_CERT_FILE}" ]; then
+    log "  Importing custom CA certificate: ${CA_CERT_FILE}..."
+    "${JAVA_DIR}/bin/keytool" -importcert \
+      -alias        custom-ca \
+      -file         "${MEDIA_DIR}/${CA_CERT_FILE}" \
+      -keystore     "${truststore}" \
+      -storetype    BCFKS \
+      -storepass    "${TRUSTSTORE_PASS}" \
+      -provider org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider \
+      -providerpath "${bcfips_jar}" \
+      -noprompt
+    log "  Custom CA imported."
+  fi
+
+  chmod 640 "${truststore}"
+  log "  Truststore written: ${truststore}"
+}
+
+setup_https_properties() {
+  local overrides_dir="${NODE_DIR}/conf/overrides.d"
+  local https_props="${overrides_dir}/02-https.properties"
+
+  # Remove legacy truststore system-property file if present from manual testing
+  rm -f "${overrides_dir}/03-truststore.properties"
+
+  if [ -f "${https_props}" ]; then
+    log "HTTPS properties already exist (02-https.properties), skipping."
+    return 0
+  fi
+
+  log "Writing HTTPS connector properties..."
   cat > "${https_props}" <<EOF
 tomcat.connector.main.redirectPort=${SSL_PORT}
 tomcat.connector.secure.port=${SSL_PORT}
@@ -379,16 +449,18 @@ tomcat.connector.secure.SSLEnabled=true
 tomcat.connector.secure.clientAuth=false
 tomcat.connector.secure.sslProtocol=TLSv1.3
 tomcat.connector.secure.keystoreType=BCFKS
-tomcat.connector.secure.keystoreFile=../conf/overrides.d/cacerts.bcfks
+tomcat.connector.secure.keystoreFile=../conf/overrides.d/server.bcfks
 tomcat.connector.secure.keystorePass=${KEYSTORE_PASS}
 tomcat.connector.secure.keystoreAlias=metricbase
+tomcat.connector.secure.truststoreFile=../conf/overrides.d/cacerts.bcfks
+tomcat.connector.secure.truststoreType=BCFKS
+tomcat.connector.secure.truststorePass=${TRUSTSTORE_PASS}
 tomcat.connector.secure.compression=off
 tomcat.connector.secure.SSLHonorCipherOrder=true
 tomcat.connector.secure.insecureRenegotiation=false
 EOF
 
   log "  HTTPS properties written: ${https_props}"
-  log "HTTPS setup complete."
 }
 
 # ── STEP 8: CREATE METRICBASE USERS ───────────────────────────────────────────
@@ -460,6 +532,7 @@ After=syslog.target network.target
 
 [Service]
 Environment=JAVA_HOME=${JAVA_DIR}
+Environment="JAVA_TOOL_OPTIONS=-Djavax.net.ssl.keyStore=${NODE_DIR}/conf/overrides.d/server.bcfks -Djavax.net.ssl.keyStoreType=BCFKS -Djavax.net.ssl.keyStorePassword=${KEYSTORE_PASS} -Djavax.net.ssl.trustStore=${NODE_DIR}/conf/overrides.d/cacerts.bcfks -Djavax.net.ssl.trustStoreType=BCFKS -Djavax.net.ssl.trustStorePassword=${TRUSTSTORE_PASS}"
 Type=forking
 ExecStart=${NODE_DIR}/startup.sh
 ExecStop=${NODE_DIR}/shutdown.sh
@@ -577,9 +650,10 @@ set_ownership() {
   log "Setting ownership of ${NODE_DIR} to ${CLOTHO_USER}:${CLOTHO_USER}..."
   chown -R "${CLOTHO_USER}:${CLOTHO_USER}" "${NODE_DIR}"
   chmod -R 750 "${NODE_DIR}"
-  # Keystore must be readable by the service account but not world-readable
-  local keystore="${NODE_DIR}/conf/overrides.d/cacerts.bcfks"
-  [ -f "${keystore}" ] && chmod 640 "${keystore}"
+  # Keystores must be readable by the service account but not world-readable
+  local overrides_dir="${NODE_DIR}/conf/overrides.d"
+  [ -f "${overrides_dir}/server.bcfks"  ] && chmod 640 "${overrides_dir}/server.bcfks"
+  [ -f "${overrides_dir}/cacerts.bcfks" ] && chmod 640 "${overrides_dir}/cacerts.bcfks"
   log "Ownership set."
 }
 
@@ -632,21 +706,25 @@ main() {
 
   log "============================================================"
   log "MetricBase Deployment"
-  log "  Host        : $(hostname -f)"
-  log "  Version     : ${MB_VERSION}"
-  log "  Node name   : ${NODE_NAME}"
-  log "  HTTP port   : ${PORT}"
-  log "  HTTPS port  : ${SSL_PORT}"
-  log "  Node dir    : ${NODE_DIR}"
-  log "  JDK         : ${JDK_TARBALL}"
-  log "  Heap        : ${HEAP_SIZE}G"
-  if [ -n "${PEER_HOST}" ]; then
-    log "  HA peer     : ${PEER_HOST}:${PEER_PORT} (replication user: ${REPLICATION_USER})"
-  else
-    log "  HA peer     : none (standalone)"
+  log "  Host          : $(hostname -f)"
+  log "  Version       : ${MB_VERSION}"
+  log "  Node name     : ${NODE_NAME}"
+  log "  HTTP port     : ${PORT}"
+  log "  HTTPS port    : ${SSL_PORT}"
+  log "  Node dir      : ${NODE_DIR}"
+  log "  JDK           : ${JDK_TARBALL}"
+  log "  Heap          : ${HEAP_SIZE}G"
+  log "  Server cert   : ${CERT_FILE}"
+  if [ -n "${CA_CERT_FILE}" ]; then
+    log "  Custom CA     : ${CA_CERT_FILE}"
   fi
-  log "  Full backup : ${FULL_BACKUP_DIR} (weekly Sunday 02:00)"
-  log "  Diff backup : ${DIFF_BACKUP_DIR} (every ${DIFF_INTERVAL}h)"
+  if [ -n "${PEER_HOST}" ]; then
+    log "  HA peer       : ${PEER_HOST}:${PEER_PORT} (replication user: ${REPLICATION_USER})"
+  else
+    log "  HA peer       : none (standalone)"
+  fi
+  log "  Full backup   : ${FULL_BACKUP_DIR} (weekly Sunday 02:00)"
+  log "  Diff backup   : ${DIFF_BACKUP_DIR} (every ${DIFF_INTERVAL}h)"
   log "============================================================"
 
   [ "${SKIP_DEPS}" = "true" ] && log "Skipping OS dependency installation (--skip_deps)." || install_deps
@@ -655,7 +733,9 @@ main() {
   install_metricbase
   fix_wrapper_conf
   configure_heap
-  setup_ssl
+  setup_keystore
+  setup_truststore
+  setup_https_properties
   create_metricbase_users
   configure_ha
   write_systemd_service
