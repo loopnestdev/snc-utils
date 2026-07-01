@@ -800,3 +800,45 @@ All notable changes to this project will be documented in this file.
   because `setup_backup` ran after `set_ownership`. Moved `setup_backup` before
   `set_ownership` so the recursive `chown` covers the password file and backup
   script.
+
+## [v0.4.0] — 2026-07-01
+
+### Added
+
+#### AI Search (`aisearch/`)
+
+- `aisearch-deploy.sh` — new idempotent deployment script for ServiceNow AI
+  Search (AIS) self-hosted nodes on RHEL 8/9 / Rocky Linux 8/9:
+  - Tunes OS limits (`vm.max_map_count=262144`, `nofile=262144`) idempotently
+    via `/etc/sysctl.conf` and `/etc/security/limits.d/`
+  - Installs JDK from tarball to `/glide/java` with `/etc/profile.d` env setup;
+    skipped if JDK is already present
+  - Creates a dedicated OS service account (`--ais_user`, default: `aisearch`)
+  - Runs the Orbit installer to create the node directory
+    (`<install_dir>/<instance_name>_<port>/`); seeds `aisearch.node.id`
+    (auto-generated via `uuidgen` if not supplied) and `ml.prediction_service.url`
+    (default: `http://127.0.0.1:5000`) via `--extra-properties`
+  - Configures JVM heap via `conf/overrides.d/10-aisearch.properties`
+  - Builds PKCS12 keystore (`conf/overrides.d/keystore.p12`) from PEM cert and
+    key using `openssl pkcs12`
+  - Builds PKCS12 truststore (`conf/overrides.d/truststore.p12`) from optional
+    App node certificate (`--appnode_cert_file`) and/or custom CA
+    (`--ca_cert_file`); both can be combined in a single truststore
+  - Writes `conf/overrides.d/02-connector-secure.properties` enforcing
+    **TLSv1.3** exclusively with TLS 1.3 cipher suites
+    (`TLS_AES_256_GCM_SHA384`, `TLS_AES_128_GCM_SHA256`,
+    `TLS_CHACHA20_POLY1305_SHA256`); `clientAuth=want` is set automatically
+    when a truststore is present
+  - Computes SHA-256 certificate digests and appends
+    `mtls.allowed.replication.sha256` and `mtls.allowed.app.sha256` to
+    `conf/aisearch.properties` for mTLS certificate allowlisting
+  - Configures optional HA replication (`--peer_host`, `--peer_port`) by
+    appending `paired.node.*` properties to `conf/aisearch.properties`
+  - Writes a diff-guarded `aisearch` systemd unit; restarts the service only
+    when the unit file changes
+  - Sets recursive ownership of the node directory to the AIS service account;
+    keystore files chmod 640
+  - Labels the AIS port as `http_port_t` in SELinux when enforcing
+  - Polls `https://127.0.0.1:<port>/v1/stats` for up to 5 minutes after start
+  - All generated keystores and override properties files are placed under
+    `conf/overrides.d/` — no files written directly to `conf/`
