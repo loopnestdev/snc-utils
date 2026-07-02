@@ -21,6 +21,7 @@ set -euo pipefail
 INSTALL_DIR="/glide"
 JAVA_DIR="/glide/java"
 MEDIA_DIR="/glide/media"
+GLIDE_TEMP_DIR="/glide/temp"
 DIST_ZIP=""
 JDK_TARBALL=""
 INSTANCE_NAME="aisnode"
@@ -310,15 +311,21 @@ install_aisearch() {
 
   mkdir -p "${INSTALL_DIR}"
 
+  # Use a dedicated temp directory under /glide so the installer's cleanup
+  # check (which compares the temp path against java.io.tmpdir) succeeds.
+  # Without this, some AIS versions throw:
+  #   RuntimeException: refusing to delete directory that doesn't look like
+  #   a temporary directory: /tmp/tmp<timestamp><uuid>
+  mkdir -p "${GLIDE_TEMP_DIR}"
+
   # The orbit installer creates <instance_name>_<port>/ in CWD.
-  # Some AIS versions exit non-zero due to a bug in the installer's own temp
-  # directory cleanup (RuntimeException: refusing to delete directory that
-  # doesn't look like a temporary directory). The installation files are written
-  # correctly before the cleanup runs, so we capture the exit code separately
-  # and treat startup.sh presence as the authoritative success indicator.
+  # Capture exit code separately — treat startup.sh presence as the
+  # authoritative success indicator in case the installer exits non-zero
+  # for any reason unrelated to the actual installation.
   local installer_rc=0
   ( cd "${INSTALL_DIR}" && \
     "${JAVA_DIR}/bin/java" \
+      -Djava.io.tmpdir="${GLIDE_TEMP_DIR}" \
       -Ddist-upgrade.deploy.java=false \
       -Ddist-upgrade.commandinstall.orbit=true \
       -jar "${MEDIA_DIR}/${DIST_ZIP}" \
@@ -333,7 +340,7 @@ install_aisearch() {
   fi
 
   if [ "${installer_rc}" -ne 0 ]; then
-    log "  Warning: installer exited ${installer_rc} (known temp-dir cleanup bug in some AIS versions); installation files verified present."
+    log "  Warning: installer exited ${installer_rc}; installation files verified present."
   fi
 
   log "AI Search installed at ${NODE_DIR}."
@@ -657,6 +664,10 @@ set_ownership() {
 # ── STEP 14: ENABLE AND START ─────────────────────────────────────────────────
 enable_start_service() {
   local svc="aisearch"
+  local svc_file="/etc/systemd/system/${svc}.service"
+
+  [ -f "${svc_file}" ] \
+    || die "Unit file not found: ${svc_file}. Run the script again to regenerate it."
 
   systemctl daemon-reload
   systemctl enable "${svc}"

@@ -906,3 +906,24 @@ All notable changes to this project will be documented in this file.
   (the server's short hostname) instead of an auto-generated UUID. The hostname
   is stable across re-runs on the same server and human-readable in `/v1/stats`
   metrics. Override with `--node_id` when a specific value is required.
+
+## [v0.4.3] — 2026-07-02
+
+### Fixed
+
+#### AI Search (`aisearch/`)
+
+- `aisearch-deploy.sh` — pass `-Djava.io.tmpdir=/glide/temp` to the orbit
+  installer JVM. The installer's cleanup check compares the temp path against
+  `java.io.tmpdir`; with the default `/tmp` the check failed and threw
+  `RuntimeException: refusing to delete directory that doesn't look like a
+  temporary directory`. Redirecting to `/glide/temp` (created by the script
+  if absent) allows the cleanup to complete cleanly with no exception.
+- `aisearch-deploy.sh` — `enable_start_service` now checks that
+  `/etc/systemd/system/aisearch.service` exists before calling
+  `systemctl enable`, producing a clear actionable error message
+  (`Run the script again to regenerate it.`) instead of the opaque
+  `Failed to enable unit: Unit file aisearch.service does not exist`
+  from systemd. This condition occurred when a prior run aborted before
+  reaching `write_systemd_service`; a re-run now self-heals since the
+  installer is skipped (idempotent) and the unit file is written.
