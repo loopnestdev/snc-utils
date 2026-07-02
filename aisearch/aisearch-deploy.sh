@@ -66,8 +66,13 @@ usage() {
     --node_id=<uuid>              Unique AIS node GUID; auto-generated if omitted
     --ml_prediction_url=<url>     Base URL of the ML Predictor            (default: http://127.0.0.1:5000)
     --heap_size=<GB>              Max JVM heap in GB                      (default: 5)
-    --appnode_cert_file=<file>    App node certificate (PEM) in media_dir for mTLS truststore
-    --ca_cert_file=<file>         Custom CA certificate (PEM) in media_dir to import into truststore
+    --appnode_cert_file=<file>    App node PEM bundle (cert + private key in one file) in media_dir
+                                  for mTLS truststore and SHA-256 digest registration.
+                                  Only the certificate portion is extracted and used on the AIS side;
+                                  the private key in the bundle is not touched by this script.
+    --ca_cert_file=<file>         CA certificate (PEM) in media_dir that issued the App node cert.
+                                  Imported into the AIS truststore so Tomcat can validate the mTLS
+                                  client certificate chain. Keep separate from --appnode_cert_file.
     --truststore_pass=<password>  Password for the mTLS truststore (truststore.p12) (default: changeit)
     --peer_host=<host>            HA paired AIS node hostname or IP (enables HA replication)
     --peer_port=<port>            HA paired AIS node port               (default: same as --port)
@@ -86,8 +91,8 @@ usage() {
     - <jdk_tarball>       JDK tarball (e.g. jdk-21.0.3_linux-x64_bin.tar.gz)
     - <cert_file>         AIS node TLS certificate PEM
     - <key_file>          AIS node TLS private key PEM
-    - <appnode_cert_file> App node certificate PEM (optional, enables mTLS)
-    - <ca_cert_file>      Custom CA certificate PEM (optional, imported into truststore)
+    - <appnode_cert_file> App node PEM bundle (cert + key, optional, enables mTLS)
+    - <ca_cert_file>      CA certificate PEM that issued the App node cert (optional)
 
   Generated files under <node_dir>/conf/overrides.d/:
     - keystore.p12               — AIS node certificate and private key (server identity + mTLS client)
@@ -113,7 +118,7 @@ usage() {
        --jdk_tarball=jdk-21.0.3_linux-x64_bin.tar.gz \\
        --cert_file=aisnode001.crt --key_file=aisnode001.key \\
        --keystore_pass=KsP4ss! --truststore_pass=TrP4ss! \\
-       --appnode_cert_file=appnode.crt \\
+       --appnode_cert_file=appnode-bundle.pem \\
        --ca_cert_file=internal-ca.crt \\
        --peer_host=aisnode002.company.com
 
@@ -399,13 +404,17 @@ setup_truststore() {
 
   if [ -n "${APPNODE_CERT_FILE}" ]; then
     log "  Importing app node certificate: ${APPNODE_CERT_FILE}..."
+    # Extract only the leaf certificate from the PEM bundle (ignores any private key present)
+    local appnode_cert_only; appnode_cert_only=$(mktemp --suffix=.pem)
+    openssl x509 -in "${MEDIA_DIR}/${APPNODE_CERT_FILE}" -out "${appnode_cert_only}"
     "${JAVA_DIR}/bin/keytool" -importcert \
       -storetype PKCS12 \
       -keystore  "${truststore}" \
       -storepass "${TRUSTSTORE_PASS}" \
       -alias     appnode \
-      -file      "${MEDIA_DIR}/${APPNODE_CERT_FILE}" \
+      -file      "${appnode_cert_only}" \
       -noprompt
+    rm -f "${appnode_cert_only}"
   fi
 
   if [ -n "${CA_CERT_FILE}" ]; then
@@ -515,11 +524,11 @@ EOF
     log "  Replication digest: ${node_digest}"
   fi
 
-  # Compute SHA-256 digest of the App node certificate (USER role), if provided
+  # Compute SHA-256 digest of the App node certificate (USER role), if provided.
+  # The input may be a PEM bundle (cert + private key); openssl x509 extracts only the leaf cert.
   if [ -n "${APPNODE_CERT_FILE}" ]; then
-    local appnode_cert="${MEDIA_DIR}/${APPNODE_CERT_FILE}"
     local appnode_der; appnode_der=$(mktemp --suffix=.der)
-    openssl x509 -inform pem -in "${appnode_cert}" -outform der -out "${appnode_der}"
+    openssl x509 -inform pem -in "${MEDIA_DIR}/${APPNODE_CERT_FILE}" -outform der -out "${appnode_der}"
     local appnode_digest
     appnode_digest=$(openssl dgst -sha256 < "${appnode_der}" | awk '{print $2}')
     rm -f "${appnode_der}"
@@ -736,17 +745,123 @@ main() {
   log "  Service        : systemctl status aisearch"
   log "  Logs           : ${NODE_DIR}/logs/"
   log ""
-  log "  Next steps:"
-  log "    1. Create an AIS partition on this node:"
+  log "────────────────────────────────────────────────────────────"
+  log "  AIS NODE — post-install steps (run on THIS host)"
+  log "────────────────────────────────────────────────────────────"
+  log ""
+  log "  1. Create an AIS partition:"
   log "       curl -k -XPOST -H 'Content-Type: application/json' \\"
-  log "         -d '{\"id\":\"<partition-uuid>\",\"instance\":{\"customerInstanceId\":\"<id>\",\"customerInstanceName\":\"<name>\",\"customerInstanceGroup\":null}}' \\"
+  log "         -d '{\"id\":\"<partition-uuid>\",\"instance\":{\"customerInstanceId\":\"<instance-id>\",\"customerInstanceName\":\"<instance-name>\",\"customerInstanceGroup\":null}}' \\"
   log "         https://$(hostname -f):${PORT}/v1/mgmt/admin/partition"
-  log "    2. Set partition state to ACTIVE (primary) or PASSIVE_ELIGIBLE (standby):"
-  log "       curl -k -XPUT https://$(hostname -f):${PORT}/v1/mgmt/admin/partition/<partition-uuid>/state/ACTIVE"
-  log "    3. Configure an AI Search Connection in your ServiceNow instance"
+  log ""
+  log "  2. Set the partition state:"
   if [ -n "${PEER_HOST}" ]; then
-    log "    4. Run this script on the peer node (${PEER_HOST}) with --peer_host=$(hostname -f)"
+    log "     Set ACTIVE on this node (primary):"
+    log "       curl -k -XPUT https://$(hostname -f):${PORT}/v1/mgmt/admin/partition/<partition-uuid>/state/ACTIVE"
+    log "     Set PASSIVE_ELIGIBLE on the peer (${PEER_HOST}) after running this script there:"
+    log "       curl -k -XPUT https://${PEER_HOST}:${PEER_PORT}/v1/mgmt/admin/partition/<partition-uuid>/state/PASSIVE_ELIGIBLE"
+  else
+    log "       curl -k -XPUT https://$(hostname -f):${PORT}/v1/mgmt/admin/partition/<partition-uuid>/state/ACTIVE"
   fi
+  log ""
+  log "  3. Verify partition health:"
+  log "       curl -k https://$(hostname -f):${PORT}/v1/mgmt/partition/<partition-uuid>/healthStatus"
+  if [ -n "${PEER_HOST}" ]; then
+    log "     Confirm replicationHealthy=true on both nodes before proceeding."
+  fi
+  log ""
+  if [ -n "${PEER_HOST}" ]; then
+    log "  4. Run this script on the peer node (${PEER_HOST}):"
+    log "       --peer_host=$(hostname -f) --peer_port=${PORT} (swap active/passive as needed)"
+    log ""
+  fi
+  log "────────────────────────────────────────────────────────────"
+  log "  GLIDE APP NODES — steps to complete on each ServiceNow app node"
+  log "────────────────────────────────────────────────────────────"
+  log ""
+  log "  These steps configure Glide to present a client certificate when"
+  log "  connecting to AIS (mTLS). Glide connects directly to AIS — this"
+  log "  is independent of HAProxy and the LB certificate."
+  log ""
+  log "  The App Node certificate is the cert whose SHA-256 digest was registered"
+  log "  in AIS as mtls.allowed.app.sha256 (via --appnode_cert_file above)."
+  log "  You can reuse your existing LB/HAProxy certificate if it has:"
+  log "    keyUsage         = critical, digitalSignature, keyEncipherment"
+  log "    extendedKeyUsage = clientAuth"
+  log "  Verify with:"
+  log "    openssl x509 -in appnode-bundle.pem -noout -text | grep -A3 'Extended Key'"
+  log ""
+  log "  The App Node PEM bundle contains both the certificate and the private key"
+  log "  in a single file (externally issued — do not split them). The CA certificate"
+  log "  that issued the App Node cert is kept separate and was already imported into"
+  log "  the AIS truststore via --ca_cert_file; it does not belong in the bundle."
+  log ""
+  log "  On each Glide app node (as root):"
+  log ""
+  log "  a) Import App Node PEM bundle (cert + key) into a BCFKS keystore"
+  log "     (locate the BouncyCastle FIPS jar in your Glide install first):"
+  log ""
+  log "     BCFIPS_JAR=\$(find <glide-dir>/lib -name 'bc-fips-*.jar' | sort -V | tail -1)"
+  log ""
+  log "     # Both cert and key are in one file; -in handles both"
+  log "     openssl pkcs12 -export \\"
+  log "       -in appnode-bundle.pem \\"
+  log "       -out /tmp/appnode.p12 -name _identity_ -passout pass:changeit"
+  log ""
+  log "     keytool -importkeystore \\"
+  log "       -srckeystore /tmp/appnode.p12 -srcstoretype PKCS12 -srcstorepass changeit \\"
+  log "       -destkeystore <glide-dir>/conf/keystore.bcfks -deststoretype BCFKS \\"
+  log "       -deststorepass changeit -destalias _identity_ \\"
+  log "       -provider org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider \\"
+  log "       -providerpath \"\${BCFIPS_JAR}\" -noprompt"
+  log ""
+  log "     rm -f /tmp/appnode.p12"
+  log ""
+  log "  b) Import the AIS node certificate into a BCFKS truststore"
+  log "     (so Glide trusts the AIS server certificate):"
+  log ""
+  log "     keytool -importcert \\"
+  log "       -storetype BCFKS \\"
+  log "       -keystore <glide-dir>/conf/truststore.bcfks -storepass changeit \\"
+  log "       -alias aisnode -file aisnode.pem -noprompt \\"
+  log "       -provider org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider \\"
+  log "       -providerpath \"\${BCFIPS_JAR}\""
+  if [ -n "${PEER_HOST}" ]; then
+    log ""
+    log "     Also import the peer AIS node certificate (HA):"
+    log "     keytool -importcert \\"
+    log "       -storetype BCFKS \\"
+    log "       -keystore <glide-dir>/conf/truststore.bcfks -storepass changeit \\"
+    log "       -alias aisnode-peer -file aisnode-peer.pem -noprompt \\"
+    log "       -provider org.bouncycastle.jcajce.provider.BouncyCastleFipsProvider \\"
+    log "       -providerpath \"\${BCFIPS_JAR}\""
+  fi
+  log ""
+  log "  c) Write <glide-dir>/conf/overrides.d/internal.services.properties:"
+  log ""
+  log "     glide.client.identity.key.path=../conf/keystore.bcfks"
+  log "     glide.client.identity.key.password=changeit"
+  log "     glide.client.identity.key.type=BCFKS"
+  log "     glide.client.identity.trust.path=../conf/truststore.bcfks"
+  log "     glide.client.identity.trust.password=changeit"
+  log "     glide.client.identity.trust.type=BCFKS"
+  log ""
+  log "  d) Restart the Glide app node to pick up the new keystores."
+  log ""
+  log "────────────────────────────────────────────────────────────"
+  log "  SERVICENOW INSTANCE — final configuration (as maint user)"
+  log "────────────────────────────────────────────────────────────"
+  log ""
+  log "  1. Set system property glide.ais.partition_id to the AIS partition UUID."
+  log "  2. Create two AI Search Connection records (ais_connection):"
+  if [ -n "${PEER_HOST}" ]; then
+    log "       Active  : https://$(hostname -f):${PORT}/"
+    log "       Passive : https://${PEER_HOST}:${PEER_PORT}/"
+  else
+    log "       Active  : https://$(hostname -f):${PORT}/"
+  fi
+  log "  3. Click 'Test Connection' on each record to verify connectivity."
+  log "  4. Click 'Enable AIS' to publish search profiles and trigger reindex."
   log "============================================================"
 }
 

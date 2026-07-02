@@ -843,7 +843,7 @@ All notable changes to this project will be documented in this file.
   - All generated keystores and override properties files are placed under
     `conf/overrides.d/` — no files written directly to `conf/`
 
-## [v0.3.4] — 2026-07-02
+## [v0.4.1] — 2026-07-02
 
 ### Added
 
@@ -852,3 +852,33 @@ All notable changes to this project will be documented in this file.
 - `metricbase-deploy.sh` — new `--tls_curves` parameter (default:
   `secp384r1,secp521r1,prime256v1`) passes `-Djdk.tls.namedGroups` via
   `JAVA_TOOL_OPTIONS` in the systemd unit to restrict TLS named curves.
+
+#### AI Search (`aisearch/`)
+
+- `aisearch-deploy.sh` — extended post-install terminal summary with three
+  clearly labelled sections printed after a successful deployment:
+  - **AIS Node**: create partition, set ACTIVE/PASSIVE_ELIGIBLE state, verify
+    partition health; HA variant includes the peer-node curl commands and a
+    reminder to run the script on the peer with swapped `--peer_host`.
+  - **Glide App Nodes**: full mTLS setup sequence — EKU verification, BCFKS
+    keystore import, BCFKS truststore import (including peer AIS cert when HA),
+    and the exact `internal.services.properties` block to write.
+  - **ServiceNow Instance**: set `glide.ais.partition_id`, create Active/Passive
+    `ais_connection` records (URLs populated from runtime hostname and peer),
+    test connection, and enable AIS.
+- `aisearch-deploy.sh` — `--appnode_cert_file` now accepts a PEM bundle
+  containing both the certificate and the private key in a single file
+  (externally issued certificates). The leaf certificate is extracted with
+  `openssl x509` before being passed to `keytool -importcert` (truststore) and
+  `openssl dgst` (SHA-256 digest); the private key in the bundle is not used on
+  the AIS side. Glide post-install instructions updated to use
+  `openssl pkcs12 -export -in bundle.pem` with no separate `-inkey` flag.
+- `aisearch-deploy.sh` — `--ca_cert_file` description clarified: the CA cert
+  that issued the App Node cert must be supplied separately (not bundled with the
+  App Node PEM) so it can be imported into the AIS truststore for Tomcat chain
+  validation during mTLS.
+
+### Fixed
+
+- `.gitignore` — added installation and self-hosted documentation files to the
+  ignore list.
